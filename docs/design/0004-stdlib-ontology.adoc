@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+= KitchenSpeak v2.0 — Standard Ontology: Materials, Tools, Appliances
+:toc:
+:toclevels: 3
+:icons: font
+
+[NOTE]
+====
+Elaborates `docs/design/0001-v2-constitution.adoc` §2. The numbers here are the
+ones the reference checker actually ships, in `src/compiler/stdlib_ks.ml`; the
+worked recipes are the corpus in `examples/v2/`. Recipes may `use` these built-ins
+without redeclaring; a file-level declaration of the same name overrides a
+built-in.
+
+These are *conservative engineering defaults*, overridable per recipe. Where
+sources disagree, the safer (lower) hard limit is chosen. A `soft` limit is a
+*quality* threshold and only warns; a `hard` limit is a *ruin/hazard* threshold
+and rejects. Only the *heating* direction is modelled as a hazard in v2.0 (the
+lower/freezing direction is future work).
+====
+
+== 1. Materials
+
+[cols="1,1,2,3", options="header"]
+|===
+| Material | Phase | Envelope (soft / *hard*) | Rationale
+
+| `Milk`   | LIQUID | scald 70C / *curdle 82C* | Proteins denature and the emulsion breaks as it approaches the boil; ~82C is a conservative curdle point. 70C "scald" is the classic technique temperature — a quality cue, not ruin.
+| `Egg`    | RAW    | coagulate 63C / *scorch 200C* | White sets ~63C, yolk ~70C — *desired*, hence soft. Dry scorching is the hazard.
+| `Water`  | LIQUID | boil 100C / — | Boiling is fine for many uses; a soft cue for techniques (poaching) that want sub-boil.
+| `Vinegar`| LIQUID | — | Acidulant; no thermal hazard at kitchen temperatures.
+| `Chocolate` | SOLID | temper 32C / *scorch 55C* | Above the tempering band quality collapses; it scorches/seizes well below water's boil.
+| `Butter` | SOLID  | brown 150C / *burn 175C* | Milk solids brown then burn; beurre noisette lives in the soft band.
+| `Oil`    | LIQUID | smoke 190C / *scorch 230C* | Smoke point ~190C (varies by oil); degradation/acrolein hazard above.
+| `Cream`  | LIQUID | split 80C / *scorch 95C* | Splits if pushed too hot or over-churned.
+| `Steak`  | RAW    | maillard 140C / *scorch 260C* | Maillard browning is the goal (soft); scorch is ruin.
+| `Flour`  | RAW_POWDER | — | Inert until bound (see Dyadic bind → Dough).
+| `Sugar`  | SOLID  | caramel 160C / *burn 190C* | Caramel stages begin ~160C; acrid burn above.
+| `Dough`  | KNEADABLE | — | The product of `(Flour, Water) <~> Actor -> Dough`.
+|===
+
+== 2. Tools (inert implements with material limits)
+
+A tool is non-linear (reusable, never `use`d) but still carries an envelope —
+this is what makes "bake the spatula" a compile error.
+
+[cols="1,1,2,3", options="header"]
+|===
+| Tool | Material | Envelope (*hard*) | Rationale
+| `Spatula`      | SILICONE  | *melt 260C*, *char 320C* | Food-grade silicone tops out ~260C.
+| `WoodenSpoon`  | WOOD      | *char 250C* | Chars/ignites in a hot dry pan or oven.
+| `NylonSpatula` | NYLON     | *melt 190C* | Cheap nylon melts low — the cautionary tool.
+| `SteelWhisk`   | STAINLESS | *anneal 800C* | Effectively safe at kitchen temperatures.
+|===
+
+== 3. Appliances (capability envelopes)
+
+[cols="1,1,1,2", options="header"]
+|===
+| Appliance | Capability | Controlled quantity | Envelope
+| `Hob`      | `Heat`  | Temperature | 0–250C, slope 0–5C/s, modalities visual+acoustic
+| `Hob`      | `Poach` | Temperature | 0–100C, *consumes target*, modality visual
+| `Hob`      | `Sear`  | Temperature | 0–250C, slope 0–8C/s
+| `Oven`     | `Bake`  | Temperature | 50–300C
+| `SousVide` | `Heat`  | Temperature | 0–95C, slope 0–0.5C/s
+| `Blender`  | `Whisk` | AngularRate | 0–1200 rpm
+| `Fridge`   | `Cool`  | Temperature | −20–8C
+| `Arm` (ROS 2) | `Move`  | Torque | 0–8Nm, reach 0–85cm
+| `Arm` (ROS 2) | `Whisk` | AngularRate | 0–1500 rpm
+| `Arm` (ROS 2) | `Plate` | Torque | 0–5Nm, reach 0–85cm, *consumes target*
+|===
+
+The chef *style* modifier may only *shrink* an envelope: `PRECISION` caps an
+appliance's slope at 50% of its rating, `BALANCED` at 80%, `POWER` at 100%.
+
+== 4. Worked recipes (and the one-line break that makes each ill-typed)
+
+Each is in `examples/v2/`; the "break" column is the corresponding entry in
+`examples/v2/negative/`, with the exact error the checker emits.
+
+[cols="1,2,2", options="header"]
+|===
+| Recipe | Types & checks exercised | One-line break → error
+
+| `ScaldMilk` (`scald-milk.ks`)
+| Primitive (°C), Tropical (GENTLE slope), Material (milk). Passes with a soft
+  `APPROACHING_SCALD` warning at 70C.
+| `target: 70C` → `target: 95C` ⇒ *CURDLE* (95 ≥ hard 82C).
+
+| `SearSteak` (`sear-steak.ks`)
+| Tropical + Tool safety: a silicone `Spatula` (melt 260C) in a 200C sear is fine;
+  soft `APPROACHING_MAILLARD` warning.
+| `Hob.Sear(... 200C)` → `Oven.Bake(s, Spatula, 300C)` ⇒ *MELT_TOOL* (300 ≥ 260C)
+  (and *SCORCH* on the steak).
+
+| `Mayonnaise` (`mayonnaise.ks`)
+| Linear (`use` yolk, oil), Dyadic (`(yolk,oil) <~> Blender -> Mayo`),
+  Choreographic (Blender then Arm), Echo (`@plated`), robotics (`Plate`).
+| Re-whisk the consumed `Mayo` ⇒ *DOUBLE_USE*; or `torque: 9Nm` on the arm ⇒
+  *OVER_TORQUE*.
+
+| `PoachedEgg` (`poached-egg.ks`)
+| The v1.0 triangle ported: Linear (egg, vinegar consumed), Tropical (water ramp),
+  Echo (`@water_shimmer`, `@white_set`), Ceremonial (`Breakfast`).
+| Drop `proving @white_set` ⇒ *UNWITNESSED_SYNC*; reuse the egg ⇒ *DOUBLE_USE*.
+
+| `PlateGarnish` (`robot-plate.ks`)
+| Consumer robotics: torque + reach envelopes, echo `@placed`.
+| `reach: 40cm` → `reach: 120cm` ⇒ *OVER_REACH* (120 > 85cm).
+|===
+
+== 5. The full error vocabulary
+
+The checker emits these codes (see `docs/spec/0003-type-system.adoc` and
+`check.ml`):
+
+[cols="1,3", options="header"]
+|===
+| Code | Meaning
+| `CURDLE` / `SCORCH` / `MELT_TOOL` / `SEIZE` / `SPLIT` | a hard material/tool thermal (or mechanical) limit would be reached
+| `OVER_RANGE` / `UNDER_RANGE` | requested quantity outside the appliance's device envelope
+| `OVER_TORQUE` / `OVER_SPEED` / `OVER_REACH` / `OVER_SLOPE` | a device mechanical/rate/spatial envelope exceeded
+| `NO_CAPABILITY` | the appliance lacks the requested verb
+| `DIM_MISMATCH` | an argument's dimension does not match the controlled quantity
+| `DOUBLE_USE` / `UNUSED_RESOURCE` / `UNDECLARED_TARGET` / `LEAK` | linearity violations
+| `MISSING_UNTIL` / `MISSING_MAXDUR` / `MISSING_ONFAIL` | a missing mandatory step construct
+| `UNWITNESSED_SYNC` / `UNKNOWN_ECHO` | echo-witness obligations
+| `APPROACHING_<NAME>` | (warning) a soft quality threshold reached
+|===
+
+== 6. Extending the ontology
+
+* *New material*: declare `material X { phase: …; thermal { soft a: …; hard b: … } }`.
+  Conservative defaults; cite the source in a comment.
+* *New appliance*: publish a descriptor (= an `appliance` declaration; see
+  `docs/design/0003-hal-and-hardware.adoc` §5). Existing recipes re-check against
+  it automatically.
+* *Per-recipe override*: a file-level declaration shadows a built-in of the same
+  name, so a recipe may tighten (never silently widen) a hazard limit for its own
+  context.

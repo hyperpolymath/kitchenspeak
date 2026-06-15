@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+= KitchenSpeak v2.0 — Blueprint Index
+:toc:
+:toclevels: 3
+:icons: font
+
+== Overview
+
+KitchenSpeak v2.0 elevates a seven-type *teaching* DSL into a production
+orchestration language for the domestic kitchen and consumer robotics, whose
+defining feature is that *physical safety lives in the type system*. Materials
+carry thermal/mechanical/chemical safety envelopes; appliances carry capability
+envelopes; an action type-checks only inside the *intersection* of the two. So a
+program that could curdle the milk, scorch the egg, bake the silicone spatula, or
+over-torque the robot arm **fails to compile** — it never reaches the hardware.
+The same types lower to (a) machine-checked Agda proofs and (b) a hardware
+abstraction layer over Matter, MQTT, and ROS 2. *Do the stuff, and prove the
+stuff.*
+
+== Document map & reading order
+
+[cols="1,3", options="header"]
+|===
+| Artefact | Purpose
+
+| `SPEC.adoc` (root) | The class's v1.0 specification — authoritative requirements; the seven types as written.
+| `COMMENTARY.adoc` (root) | Type-theoretic foundations of the seven types (linear logic, session types, refinement types, …).
+| *`docs/design/0001-v2-constitution.adoc`* | **Start here.** The binding contract for v2.0: the data model, the physical-safety judgement (§5), the AST shape, the proof obligations, the repo layout.
+| `docs/spec/0001-lexical-grammar.adoc` | Normative lexical grammar (closes grammar.ebnf O3): tokens, dimensioned literals, the unit suffix table.
+| `docs/spec/0002-concrete-grammar.adoc` | The complete EBNF v2 (closes O1/O2; adds material/tool/appliance/recipe/use/bind).
+| `docs/spec/0003-type-system.adoc` | The normative type system: inference rules, the physical-safety judgement, linearity (QTT), error vocabulary, soundness statement.
+| `docs/design/0002-semantics.adoc` | Operational + denotational semantics and the safety calculus (theorem statements + discharge strategy; progress/preservation).
+| `docs/design/0003-hal-and-hardware.adoc` | The HAL: abstract capability trace, Matter/MQTT/ROS 2 projections, the trust boundary, device certification for *future* hardware.
+| `docs/design/0004-stdlib-ontology.adoc` | The material/tool/appliance ontology with real numbers; four worked recipes and the one-line break that makes each ill-typed.
+| `proofs/agda/` | `Dough`, `PoachedEgg`, `EchoBridge` (re-homed) + `NoCurdle` (v2.0 flagship, machine-checked material-envelope proof).
+| `src/compiler/` | The OCaml reference front end + physical-safety checker + HAL (`ksc`). Dependency-free; `dune build`.
+| `examples/v2/` | Well-typed recipes; `examples/v2/negative/` the corpus that must be rejected; `tests/run-corpus.sh` asserts both.
+|===
+
+A 30-minute orientation: constitution → `examples/v2/poached-egg.ks` and
+`scald-milk.ks` → run `bash tests/run-corpus.sh` → `docs/spec/0003-type-system.adoc`
+§physical-safety → `proofs/agda/NoCurdle.agda`.
+
+== The golden thread: one property, end to end
+
+Follow *no-curdle* (milk must never reach its 82C curdle envelope) through every
+layer of the stack — this is the spine the whole design hangs on:
+
+[cols="1,2,3", options="header"]
+|===
+| Hop | Where | What happens to `Hob.Heat(m, target: 95C)`
+
+| Surface syntax | `examples/v2/negative/curdle-milk.ks` | The author writes a step heating milk to 95C.
+| Lexer | `docs/spec/0001` · `lexer.ml` | `95C` lexes to one `QTY` token; `units.ml` normalises it to `{95, Temperature}`.
+| Grammar / AST | `docs/spec/0002` · `parser.ml`, `ast.ml` | Parses to a `step` with target `m` and named arg `target: 95C`.
+| Type rule | `docs/spec/0003` §physical-safety | The safety judgement requires the requested exposure strictly below every hard limit of each touched material.
+| Safety judgement | `check.ml` `check_targets_exposure` | `m : Milk`; hard limit `curdle = 82C`; `95 ≥ 82` ⇒ emit **CURDLE**.
+| Operational semantics | `docs/design/0002` | A well-typed configuration never steps into a *ruin phase* (CURDLED); the ill-typed program is rejected before it can.
+| Proof | `proofs/agda/NoCurdle.agda` | `no-curdle : ∀ t → temp-at t < 82`; `stays-fresh : ∀ t → milk-state-at t ≡ FRESH`. Machine-checked.
+| HAL | `docs/design/0003` §4 · `hal.ml` | `ksc lower` runs the checker first and *refuses to lower* the unsafe recipe — the trust boundary.
+|===
+
+The well-typed sibling (`scald-milk.ks`, `target: 70C`) passes every hop, emits an
+`APPROACHING_SCALD` *warning* (soft threshold), and lowers cleanly to a Matter /
+MQTT / ROS 2 trace.
+
+== Status (2026-06-15)
+
+* *Design*: constitution + 5 of 6 elaborated docs landed (HAL & ontology authored
+  by hand after a mid-run interruption; lexical/grammar/type-system/semantics from
+  the blueprint workflow).
+* *Proofs*: `NoCurdle.agda` machine-checked (exit 0, zero unsolved goals) alongside
+  the re-homed `Dough`/`PoachedEgg`/`EchoBridge`.
+* *Prototype*: `ksc` builds clean and passes the full 14-case corpus (5 accept,
+  9 reject-with-expected-code) plus HAL lowering to all three backends.
+* *Not yet*: the seven types' full session-typing/effect machinery in the checker
+  (the prototype enforces linearity, the three mandatory constructs, echo witnesses,
+  and the physical-safety keystone; choreographic deadlock-freedom and ceremony
+  commutation are specified but not yet implemented). Tracked in `ROADMAP.adoc`.
