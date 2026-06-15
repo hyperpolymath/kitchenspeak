@@ -17,17 +17,25 @@ over-torque, melt-the-tool) are compile errors, not firmware run-time faults.")
     (primary-language "OCaml (front end + checker) + Agda/Lean (proofs) + Idris2/Zig (ABI/FFI)")
     (status "v1.0 spec stable; v2.0 design + reference prototype in progress"))
   (current-position
-    (phase "v2.0 elevation: design blueprint + reference prototype")
-    (completion-percentage 35)
-    (milestone "Re-homed proofs/ROADMAP/ADRs into the standalone repo; \
-authoring the v2.0 design constitution and the OCaml reference checker."))
+    (phase "v2.0 elevation: blueprint + reference prototype LANDED; PR #1 open")
+    (completion-percentage 60)
+    (milestone "Blueprint docs, OCaml reference checker (corpus 15/15), and the \
+machine-checked NoCurdle proof are committed (signed), pushed, and open as PR #1. \
+Remaining work is depth: session-typing/effects in the checker, more proofs, \
+real HAL adapters."))
   (heritage
     (note "This repo was instantiated from rsr-template-repo and previously \
 retained the template's STATE identity. Corrected 2026-06-15 to its true \
 identity. The design substance (proofs, ROADMAP, ADRs 0002-0004) was \
 re-homed from the nextgen-languages monorepo copy in the same session."))
+  (done-2026-06-15
+    ("docs/spec + docs/design blueprint landed (constitution, grammar, type system, semantics, HAL, ontology, index)."
+     "src/compiler/ OCaml checker built; corpus tests/run-corpus.sh 15/15 (5 accept, 10 reject-with-expected-code)."
+     "proofs/agda/NoCurdle.agda machine-checked (exit 0) + wired into proofs/Makefile."
+     "Committed (signed id_ed25519_signing), pushed, PR #1 open, GitHub Verified."))
   (critical-next-actions
-    ("Land docs/spec/ (lexical + concrete grammar v2), docs/design/ (type system, semantics, HAL), and the safety calculus."
-     "Build src/compiler/ (OCaml): lexer -> parser -> typed AST -> physical-safety checker -> HAL lowering stub."
-     "Machine-check the new no-curdle / no-bake-tool safety proofs alongside Dough/PoachedEgg."
-     "Wire the negative corpus (curdle-the-milk, bake-the-spatula, over-torque, double-used-egg) into a reject/accept test runner.")))
+    ("Implement choreographic deadlock-freedom + ceremony-commutation in src/compiler/check.ml (specified, not yet enforced)."
+     "Add Emulsion + Sear proofs (ROADMAP Phase 1c); then QTT-Agda linearity port; then Lean 4 port."
+     "Wire real HAL adapters (Matter/MQTT/ROS2) behind the trace IR the prototype already emits."
+     "Finish the adversarial completeness pass over the 6 blueprint docs (4 are workflow drafts; critic cut by spend cap)."
+     "Retire or repoint the old nextgen-languages/kitchenspeak copy now the standalone is canonical and ahead.")))
