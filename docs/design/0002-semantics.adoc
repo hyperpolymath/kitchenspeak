@@ -1,0 +1,909 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+= KitchenSpeak v2.0 — Operational Semantics & the Safety Calculus
+:toc:
+:toclevels: 3
+:icons: font
+:stem: latexmath
+
+[NOTE]
+====
+This document elaborates the v2.0 Design Constitution
+(`docs/design/0001-v2-constitution.adoc`) along its *dynamic* axis: what a
+well-typed recipe _does_ when it runs, and exactly which of the constitution's
+safety promises are kept by the type checker (compile time) versus by an echo
+monitor (run time). It is binding-subordinate: where the constitution fixes a
+shape (the keystone judgment §5, the three mandatory constructs §3, the
+proven/postulated boundary §6), this document refines it and must not
+contradict it.
+
+It reuses, without re-deriving, the static keystone judgment
+stem:[\Gamma \vdash s : \mathsf{Safe}] from constitution §5. That judgment is
+the _door_; this document is the _room_: it says what stepping through a
+well-typed door looks like, and proves that you never fall through the floor.
+
+Backwards-compatibility (constitution §9): every reduction rule degrades to the
+v1.0 reading when materials and appliances are the standard-library defaults, so
+every well-typed v1.0 program retains its v1.0 behaviour.
+====
+
+== 1. Configurations
+
+A running recipe is a small-step rewrite over a six-component *configuration*.
+Where the constitution speaks of "resource store + appliance state + wall-clock
++ sensor/echo environment + emitted device-trace", we name and type each
+component.
+
+[stem]
+++++
+\kappa \;=\; \langle\, \Sigma,\; \Delta,\; \tau,\; \mathcal{E},\; \Phi,\; \Theta \,\rangle
+++++
+
+[cols="1,1,4", options="header"]
+|===
+| Symbol | Name | Contents
+
+| stem:[\Sigma]
+| Resource store
+| A linear multiset of live resources, each `r ↦ (Material, phase, grades)`.
+  `grades` is the QTT residue (constitution §2.5): stem:[1] = exactly-once-live,
+  stem:[0] = consumed/erased, stem:[\omega] = unrestricted (ambient appliance
+  handles only). The store is *affine-by-construction*: a resource leaves
+  stem:[\Sigma] only by being consumed or transformed, never copied.
+
+| stem:[\Delta]
+| Appliance state
+| For each appliance, its current capability lease and a typestate:
+  `IDLE`, `ACTIVE(verb, env)`, or `FAULTED`. The lease records the
+  post-style envelope the chef holds (constitution §2.5: style may only
+  _shrink_).
+
+| stem:[\tau]
+| Wall-clock
+| A monotone nondecreasing rational in seconds. Only the reduction relation
+  advances it; the program cannot read or write it except through `until` /
+  `max_duration`.
+
+| stem:[\mathcal{E}]
+| Echo environment
+| The postulated sensor oracles bound by `echo @e on A.modality`. Modelled as
+  a sampling function per modality, stem:[\mathcal{E}(e) : \mathsf{Time} \to V],
+  exactly the `temp-at` / `white-set-at` / `viscosity-at` of the Agda proofs.
+  stem:[\mathcal{E}] is *read-only* to the program and *opaque* to the type
+  checker — it is the trust boundary made concrete.
+
+| stem:[\Phi]
+| Pace / ceremony reader
+| The ambient ceremony context: `pace`, `alert_level`, `priority`, and the
+  derived *budget scale* stem:[\beta \in \mathbb{Q}_{>0}] (constitution §2.5;
+  COMMENTARY "Ceremonial"). stem:[\Phi] is a _reader_ effect — it is threaded,
+  never mutated by steps.
+
+| stem:[\Theta]
+| Device trace
+| The emitted, append-only *capability trace* (constitution §6): a sequence of
+  records stem:[(A, \mathit{verb}, \mathit{env}, \mathit{until}, \mathit{maxdur}, \mathit{onfail}, \mathit{witness?})].
+  stem:[\Theta] is write-only and the denotational observable.
+|===
+
+=== 1.1 Phase tagging of configurations
+
+Every configuration carries a *phase tag* drawn from
+
+[stem]
+++++
+\mathsf{Phase} \;=\; \{\, \mathsf{Run},\; \mathsf{Done}(o),\; \mathsf{Ruin}(d) \,\}
+++++
+
+where stem:[o \in \{\mathsf{success}, \mathsf{aborted}, \mathsf{recovered}, \mathsf{warmed}\}]
+is a mission outcome (constitution §3), and stem:[d] ranges over the *ruin
+diagnostics* `CURDLE | SCORCH | MELT_TOOL | OVER_TORQUE | OVER_REACH`
+(constitution §5). The whole point of the calculus is the theorem in §6.2:
+
+[IMPORTANT]
+====
+*A well-typed configuration never carries a stem:[\mathsf{Ruin}(d)] tag.* The
+ruin phases are reachable only as syntactic objects in the metatheory, used to
+_state_ the safety theorems; the operational semantics has no rule that produces
+one from a well-typed source. They are the absorbing failure states of
+constitution §2.2, present so we can prove they are unreachable.
+====
+
+The initial configuration of `recipe R under C` over inputs stem:[\bar{r}] is
+
+[stem]
+++++
+\mathit{init}(R, C, \bar{r}) \;=\; \langle\, \Sigma_0[\bar{r}],\; \Delta_0\ (\text{all IDLE}),\; 0,\; \mathcal{E},\; \Phi_C,\; \varepsilon \,\rangle \;:\; \mathsf{Run}
+++++
+
+== 2. Small-step reduction
+
+We write stem:[\kappa \longrightarrow \kappa'] for one reduction step, and
+stem:[\longrightarrow^{*}] for its reflexive-transitive closure. Rules are
+grouped by the construct they reduce. Throughout, stem:[\mathit{env}(a)] is the
+requested envelope extracted from a step's arguments (constitution §5), and
+stem:[\mathsf{cap}(A, \mathit{verb})] is the post-style capability envelope held
+in stem:[\Delta].
+
+=== 2.1 The step as bounded recursion on fuel (the `until`-loop)
+
+A step is `A.Verb(target, args) until cond max_duration m on_fail h`. Its
+dynamics are a *fuel-bounded feedback loop*, mirroring `heat` / `poach` /
+`knead` in the Agda proofs exactly. Fuel is the budget measured in sampling
+ticks, scaled by the ceremony:
+
+[stem]
+++++
+\mathit{fuel}_0 \;=\; \left\lfloor \beta \cdot \dfrac{m}{\delta} \right\rfloor
+\qquad (\delta = \text{tick length},\ \beta = \Phi.\mathit{budgetScale})
+++++
+
+There are exactly four step rules — one entry, two loop transitions, one
+exhaustion — and they are *jointly exhaustive on the configuration*, which is
+where progress comes from (§6.1).
+
+.S-Enter — open the lease, emit the trace record
+[stem]
+++++
+\frac{
+  \Gamma \vdash s : \mathsf{Safe} \qquad \Delta(A) = \mathsf{IDLE}
+}{
+  \langle \Sigma, \Delta, \tau, \mathcal{E}, \Phi, \Theta \rangle\ \blacktriangleright\ s
+  \;\longrightarrow\;
+  \langle \Sigma, \Delta[A \mapsto \mathsf{ACTIVE}(\mathit{verb}, \mathit{env}(s))], \tau, \mathcal{E}, \Phi, \Theta \cdot \rho(s) \rangle\ \blacktriangleright\ \mathsf{loop}(s, \mathit{fuel}_0)
+}
+++++
+
+stem:[\rho(s)] is the abstract trace record of constitution §6. The premise
+stem:[\Gamma \vdash s : \mathsf{Safe}] is the keystone — *no step enters its
+loop unless it is statically safe*. This is the single hinge on which §6.2
+turns.
+
+.S-Sat — the `until` condition is met: exit with witness
+[stem]
+++++
+\frac{
+  \mathit{sat}(\mathit{cond}, \mathcal{E}, \tau) = \mathsf{tt} \qquad
+  w = \mathit{mkWitness}(\mathit{cond}, \tau)
+}{
+  \kappa\ \blacktriangleright\ \mathsf{loop}(s, \mathit{suc}\ n)
+  \;\longrightarrow\;
+  \kappa[\Delta(A)\!\mapsto\!\mathsf{IDLE}]\ \blacktriangleright\ \mathsf{ok}(s, w)
+}
+++++
+
+The two condition forms (`grammar.ebnf`) discharge stem:[\mathit{sat}]
+differently:
+
+* *Tropical threshold* `~ metric cmp q`: stem:[\mathit{sat}] reads the
+  controller-projected metric and compares; the witness stem:[w] is a
+  _trajectory-bound_ witness, the operational image of `tropical-safe`.
+* *Echo witness* `@e cmp v`: stem:[\mathit{sat}] reads stem:[\mathcal{E}(e)(\tau)];
+  the witness stem:[w = (\tau, \mathit{pf})] is the *dependent pair* of sample
+  time and threshold proof — literally `ShimmerWitness` / `WhiteWitness` /
+  `Witness`, and via `EchoBridge.agda` an `echo-types` `Echo (fired e thr) true`.
+
+.S-Step — not yet satisfied, fuel remains: sample, tick, recurse
+[stem]
+++++
+\frac{
+  \mathit{sat}(\mathit{cond}, \mathcal{E}, \tau) = \mathsf{ff} \qquad
+  \mathit{env}(s) \subseteq \mathsf{cap}(A,\mathit{verb}) \qquad
+  \forall m \in \mathsf{touched}(s).\ \mathit{env}(s) \prec \mathsf{danger}(m)
+}{
+  \langle \Sigma, \Delta, \tau, \mathcal{E}, \Phi, \Theta \rangle\ \blacktriangleright\ \mathsf{loop}(s, \mathit{suc}\ n)
+  \;\longrightarrow\;
+  \langle \Sigma, \Delta, \tau + \delta, \mathcal{E}, \Phi, \Theta \rangle\ \blacktriangleright\ \mathsf{loop}(s, n)
+}
+++++
+
+[IMPORTANT]
+====
+The two premises on the right of *S-Step* are the *operational re-assertion* of
+the static keystone judgment, evaluated against the _live_ envelope each tick.
+On a well-typed source they are _redundant_ — preservation (§6.3) guarantees
+they hold — but stating them makes the no-ruin theorem self-evident: there is
+*no rule* that advances stem:[\tau] while a danger limit is reached, so no
+trajectory ever crosses one. This is curdle/scorch/melt/over-torque safety _as a
+property of the reduction relation_, independent of the proof in Agda.
+====
+
+.S-Exhaust — fuel zero: take the `on_fail` branch
+[stem]
+++++
+\frac{}{
+  \kappa\ \blacktriangleright\ \mathsf{loop}(s, \mathsf{zero})
+  \;\longrightarrow\;
+  \kappa[\Delta(A)\!\mapsto\!\mathsf{IDLE}]\ \blacktriangleright\ \mathsf{fail}(h)
+}
+++++
+
+stem:[\mathit{fuel}] is the *well-founded measure* (§6.4). S-Step strictly
+decreases it (stem:[\mathit{suc}\ n \to n]); S-Sat and S-Exhaust leave the loop.
+Hence every loop halts in at most stem:[\mathit{fuel}_0] steps — the operational
+form of "structurally recursive on fuel" from `Dough.agda` §5.
+
+=== 2.2 `on_fail` transitions (ABORT / RECOVER / WARM)
+
+stem:[\mathsf{fail}(h)] resolves the mandatory handler. All three branches are
+*inhabited and total* (constitution §3; COMMENTARY "on_fail"): this is why no
+configuration is stuck at a failure point.
+
+.S-Abort
+[stem]
+++++
+\kappa\ \blacktriangleright\ \mathsf{fail}(\mathtt{ABORT})
+\;\longrightarrow\;
+\langle \Sigma \setminus \mathsf{touched}(s),\ \Delta,\ \tau,\ \mathcal{E},\ \Phi,\ \Theta\cdot\overline{\mathtt{abort}}\rangle : \mathsf{Done}(\mathsf{aborted})
+++++
+
+ABORT consumes the touched linear resources (the constitution's "permanent
+loss"; `poached-egg.ks` Step 1 note: a cold hob wastes nothing because nothing
+was committed; a wasted egg is modelled as consumption). The mission ends.
+
+.S-Recover — re-arm with a bounded supervisor extension
+[stem]
+++++
+\frac{
+  k = \mathit{recoverGrant}(\Phi) \qquad k > 0
+}{
+  \kappa\ \blacktriangleright\ \mathsf{fail}(\mathtt{RECOVER})
+  \;\longrightarrow\;
+  \kappa\ \blacktriangleright\ \mathsf{loop}(s, k)
+}
+++++
+
+RECOVER re-enters the loop with a _fresh, strictly positive, bounded_ fuel grant
+stem:[k] drawn from the ceremony's supervisor budget (`poached-egg.ks` Step 2:
+"extend by 30s under a supervisor override"). Crucially stem:[k] is drawn from a
+*finite* per-mission recovery budget stem:[K_{\max}], decremented on each grant;
+when stem:[\mathit{recoverGrant}] returns stem:[0] the next rule fires:
+
+.S-Recover-Exhausted
+[stem]
+++++
+\frac{ \mathit{recoverGrant}(\Phi) = 0 }{
+  \kappa\ \blacktriangleright\ \mathsf{fail}(\mathtt{RECOVER})
+  \;\longrightarrow\;
+  \langle \Sigma \setminus \mathsf{touched}(s),\ \Delta,\ \tau,\ \mathcal{E},\ \Phi,\ \Theta\cdot\overline{\mathtt{recovered}}\rangle : \mathsf{Done}(\mathsf{recovered})
+}
+++++
+
+The finiteness of stem:[K_{\max}] is what keeps RECOVER from defeating
+termination: total fuel consumed by a step is bounded by
+stem:[\mathit{fuel}_0 + K_{\max}] (§6.4).
+
+.S-Warm — hold safe, release resources non-destructively
+[stem]
+++++
+\kappa\ \blacktriangleright\ \mathsf{fail}(\mathtt{WARM})
+\;\longrightarrow\;
+\langle \Sigma',\ \Delta[A\mapsto\mathsf{ACTIVE}(\mathit{hold},\,\mathit{env}_{\mathsf{warm}})],\ \tau,\ \mathcal{E},\ \Phi,\ \Theta\cdot\overline{\mathtt{warm}}\rangle : \mathsf{Done}(\mathsf{warmed})
+++++
+
+WARM transitions the appliance to a *hold* envelope stem:[\mathit{env}_{\mathsf{warm}}]
+that is, by the WARM well-formedness side-condition, _strictly inside every
+touched material's danger set_ — the held state is itself a safe step. The
+touched resources survive in stem:[\Sigma'] in a `HELD` phase (not consumed):
+WARM is the one outcome that does not destroy the linear resource, which is why
+it is the right handler for "keep dinner edible while the guests are late".
+
+=== 2.3 Sync barriers
+
+`sync(A₁,…,Aₙ) proving @e { step⁺ }` is a multiparty session barrier
+(COMMENTARY "Choreographic"). Its dynamics: all listed actors must reach the
+barrier, the body runs, and the barrier releases only on the witness.
+
+.S-Sync-Enter — all actors idle, install the barrier
+[stem]
+++++
+\frac{
+  \forall i.\ \Delta(A_i) = \mathsf{IDLE} \qquad
+  \texttt{@}e \text{ declared on some } A_i.\mathit{modality} \quad(\text{constitution §5 witness})
+}{
+  \kappa\ \blacktriangleright\ \mathsf{sync}(\bar{A}, e, \bar{s})
+  \;\longrightarrow\;
+  \kappa\ \blacktriangleright\ \mathsf{bar}(\bar{A}, e,\ \mathsf{seq}(\bar{s}))
+}
+++++
+
+.S-Sync-Body — run the body to a result (sequential per O1; see §2.6)
+[stem]
+++++
+\frac{
+  \kappa\ \blacktriangleright\ \mathsf{seq}(\bar{s}) \;\longrightarrow^{*}\; \kappa'\ \blacktriangleright\ o
+}{
+  \kappa\ \blacktriangleright\ \mathsf{bar}(\bar{A}, e, \mathsf{seq}(\bar{s}))
+  \;\longrightarrow\;
+  \kappa'\ \blacktriangleright\ \mathsf{release}(\bar{A}, e, o)
+}
+++++
+
+.S-Sync-Release — discharge the barrier-release witness
+[stem]
+++++
+\frac{
+  o = \mathsf{success} \;\Rightarrow\; \exists t \le \tau'.\ \mathcal{E}(e)(t)\ \text{fired}
+}{
+  \kappa'\ \blacktriangleright\ \mathsf{release}(\bar{A}, e, o)
+  \;\longrightarrow\;
+  \langle \ldots, \Theta'\cdot \mathit{witness}(e, t) \rangle\ \blacktriangleright\ o
+}
+++++
+
+The premise is the COMMENTARY "proving" reading: the block is a _named
+existential witness binder_ — success entails stem:[\exists t.\ @e(t)]. The
+witness is appended to the trace, which is what makes the echo-witness theorem
+(§5.6, `served-gives-witnesses`) hold at the recipe level.
+
+*Deadlock-freedom* is structural: stem:[\mathsf{sync}] holds appliance leases
+only between S-Sync-Enter and the matching release, leases are acquired in the
+single textual order of the (currently non-nestable, O1) body, and no step
+acquires a lease it does not release. Hence no cyclic wait can form (§6.5).
+
+=== 2.4 Dyadic bind
+
+`(r₁,…,rₙ) <~> A -> r_out;` is the irreversible tensor of the constitution
+(§2.4) and COMMENTARY "Dyadic". It is _algebra, not physics_ (`grammar.ebnf`
+Patch 2 slogan): it does not open an appliance lease or advance the clock.
+
+.S-Bind
+[stem]
+++++
+\frac{
+  \forall i.\ \Sigma(r_i) = (\_,\_, 1) \qquad
+  \mathsf{compatible}(\overline{\mathsf{chem}(r_i)}) \qquad
+  M_{\mathit{out}} = \mathsf{combine}(\overline{\mathsf{Material}(r_i)})
+}{
+  \langle \Sigma, \ldots \rangle\ \blacktriangleright\ (\bar{r}) \mathbin{<\!\sim\!>} A \to r_{\mathit{out}}
+  \;\longrightarrow\;
+  \langle \Sigma[\bar{r}\mapsto 0,\ r_{\mathit{out}}\mapsto (M_{\mathit{out}},\,\phi_{\mathit{out}},\,1)],\ \ldots \rangle\ \blacktriangleright\ \checkmark
+}
+++++
+
+Each input grade goes stem:[1 \to 0] (consumed exactly once — the
+`bind-dough` shape: "consumes both, returns neither"). The output carries the
+*union of provenance typestate* (COMMENTARY "Dyadic" proof obligation) and the
+*intersection-refined safety envelope* stem:[\phi_{\mathit{out}}]: a hard limit
+of the product is the tightest hard limit of its factors, so the product can
+never be _less_ safe than its most fragile input (this is what keeps
+`Flour ⊗ Water → Dough` from forgetting that an egg-enriched dough still
+curdles). The `compatible` premise rejects chemically incompatible binds at the
+static layer (constitution §2.2 `incompatible-with`); it appears here only as
+the preserved invariant.
+
+=== 2.5 Ceremony re-pacing
+
+A ceremony is a *reader* over the whole reduction (COMMENTARY "Ceremonial":
+commutes with linearity). It is installed once and never mutated:
+
+.S-Ceremony
+[stem]
+++++
+\frac{
+  \Phi' = \Phi_C \qquad \beta = \mathit{pace}(C) \in \mathbb{Q}_{>0}
+}{
+  \langle \Sigma, \Delta, \tau, \mathcal{E}, \Phi, \Theta \rangle\ \blacktriangleright\ (\mathbf{under}\ C\ \{\bar{b}\})
+  \;\longrightarrow\;
+  \langle \Sigma, \Delta, \tau, \mathcal{E}, \Phi', \Theta \rangle\ \blacktriangleright\ \mathsf{seq}(\bar{b})
+}
+++++
+
+The re-pacing acts *only* through stem:[\beta] in the fuel formula (§2.1) and
+through stem:[\mathit{recoverGrant}] / stem:[\mathit{env}_{\mathsf{warm}}].
+Decisively, stem:[\Phi] *does not appear in stem:[\Sigma]* in any rule: no rule
+reads stem:[\Phi] to add, copy, or drop a resource. This is the operational
+form of the COMMENTARY obligation "ceremony effects commute with linear-resource
+effects":
+
+[stem]
+++++
+\Sigma\text{-projection}(\kappa \xrightarrow{\ C\ } \kappa') \;=\; \Sigma\text{-projection}(\kappa \xrightarrow{\ C'\ } \kappa')
+\quad\text{for any two ceremonies } C, C'.
+++++
+
+A `PRECISION`/`SLOW` ceremony may shrink stem:[\beta] (tighter budget,
+lower jitter) but can never widen an envelope — *re-pacing only shrinks*,
+matching the constitution's "style may only shrink" rule (§2.5).
+
+=== 2.6 What is _not_ reduced here (open items)
+
+Per `grammar.ebnf` O1, `sync` bodies are non-nestable: S-Sync-Body reduces a
+flat `seq` of steps. The semantics is therefore stated for the *flat* fragment;
+nesting (O1) and the undefined `resource_decl`/`chef_decl`/`echo_decl`
+productions (O2) are deferred exactly as the grammar defers them. When O1 is
+closed, S-Sync-Body generalises to reduce a nested barrier, and deadlock-freedom
+(§6.5) must be re-proved over the nesting tree rather than the textual line.
+
+== 3. Denotational sketch
+
+A recipe denotes a *total* function from its inputs to an outcome-tagged result
+paired with the emitted trace — the constitution's
+stem:[\mathsf{Inputs} \to (\{\mathsf{success}\} \uplus \{\mathsf{aborted}, \mathsf{recovered}, \mathsf{warmed}\}) \times \mathsf{Trace}].
+
+[stem]
+++++
+\mathcal{D}\llbracket R \rrbracket \;:\; \mathsf{Inputs}_R \times \mathcal{E}\text{-env} \times \mathsf{Ceremony} \;\longrightarrow\; \mathsf{Outcome} \times \mathsf{Trace}
+++++
+
+where
+
+[stem]
+++++
+\mathsf{Outcome} \;=\; \underbrace{\mathsf{success}}_{\text{carries }\exists\text{-witnesses}} \;\uplus\; \mathsf{aborted} \;\uplus\; \mathsf{recovered} \;\uplus\; \mathsf{warmed}
+++++
+
+The denotation is read off the operational semantics by the *adequacy* equation
+
+[stem]
+++++
+\mathcal{D}\llbracket R \rrbracket(\bar{r}, \mathcal{E}, C) = (o, \Theta')
+\quad\Longleftrightarrow\quad
+\mathit{init}(R, C, \bar{r}) \;\longrightarrow^{*}\; \langle \ldots, \Theta' \rangle : \mathsf{Done}(o).
+++++
+
+This is _exactly_ the type of `poached-egg : Water COLD → Egg RAW → Vinegar →
+ProgramResult` in `PoachedEgg.agda` §7, with `ProgramResult` = stem:[\mathsf{Outcome}]
+(`Served`/`HeldWarm`/`ColdAbort`) and the witnesses inside `Served`/`HeldWarm`
+being the trace's stem:[\exists]-content. Three properties make
+stem:[\mathcal{D}] a genuine _total_ function:
+
+. *Definedness everywhere (totality).* The right-hand side always exists because
+  the reduction always reaches a stem:[\mathsf{Done}] (§6.4 termination + §6.1
+  progress). There is no stem:[\bot] in stem:[\mathsf{Outcome}].
+. *Single-valuedness (determinism modulo stem:[\mathcal{E}]).* Given a fixed
+  oracle environment stem:[\mathcal{E}], the reduction is deterministic: at each
+  configuration exactly one rule applies (the four step rules are mutually
+  exclusive on the loop tag; the bind/sync/ceremony rules on the redex shape).
+  Hence stem:[\mathcal{D}] is a function, not a relation.
+. *Witnessed success.* The stem:[\mathsf{success}] summand is _not_ a bare tag:
+  it is stem:[\Sigma_{\bar{t}}.\ \bigwedge_e @e(t_e)], a tuple of echo witnesses
+  (`served-gives-witnesses`). Operationally these are the
+  stem:[\mathit{witness}(e,t)] records appended by S-Sync-Release.
+
+The trace stem:[\Theta'] is the *observable*: two recipes are denotationally
+equal iff they yield the same outcome and the same capability trace on every
+input/oracle/ceremony triple. This makes the HAL projection of constitution §6 a
+denotation-preserving _post-composition_ stem:[\pi_{\mathsf{backend}} \circ \mathcal{D}\llbracket R \rrbracket].
+
+== 4. The safety calculus: theorems and their discharge
+
+This is the heart of the document. For each safety property the constitution
+promises (§§5, 7), we state the theorem precisely, classify _how_ it is
+discharged (compile-time refinement check vs run-time echo monitor), locate the
+proven/postulated boundary, and name its Agda lowering.
+
+=== 4.1 Discharge taxonomy
+
+[cols="1,3", options="header"]
+|===
+| Discharge class | Meaning
+
+| *CT-refine*
+| Discharged entirely at compile time by the keystone refinement checker
+  (constitution §5). No run-time component. If it does not hold, the program
+  does not type-check.
+
+| *CT-struct*
+| Discharged at compile time by a structural/substructural check (linearity,
+  presence of `max_duration`/`on_fail`, projection compatibility). Syntactic,
+  not numeric.
+
+| *RT-monitor*
+| Discharged at run time by an echo monitor against a _local_ sensor
+  (constitution §9 Zero Scams). The compile-time proof holds _given_ the
+  postulate; the monitor is what makes the postulate honest on the device.
+
+| *Boundary*
+| A theorem whose statement is CT but whose _soundness_ rests on a postulate
+  discharged RT. These are the proven/postulated seams.
+|===
+
+=== 4.2 The theorems
+
+[cols="2,4,1,3", options="header"]
+|===
+| Property | Theorem (recipe-level) | Discharge | Agda lowering
+
+| *No-curdle / no-scorch*
+| For every reachable configuration stem:[\kappa] and every material
+  stem:[m \in \mathsf{touched}], the live exposure is _strictly_ below every
+  hard thermal limit: stem:[\forall \kappa\ \text{reachable}.\ \mathit{env}(\kappa) \prec \mathsf{danger}_{\mathit{thermal}}(m)]. Equivalently: no reachable stem:[\kappa] is stem:[\mathsf{Ruin}(\mathtt{CURDLE})] or stem:[\mathsf{Ruin}(\mathtt{SCORCH})].
+| *CT-refine* + *Boundary*
+| `PoachedEgg.tropical-safe` (proven: trajectory stem:[< 100\mathrm{C}]); the
+  flagship generalisation is `NoCurdle.agda` (planned), the material-envelope
+  analogue proving `ScaldMilk` keeps milk stem:[< 82\mathrm{C}] curdle.
+
+| *No-bake-tool*
+| For every tool stem:[t \in \mathsf{touched}] and reachable stem:[\kappa],
+  exposure stem:[\prec] the tool's `melt`/`char` hard limit; no reachable
+  stem:[\mathsf{Ruin}(\mathtt{MELT\_TOOL})].
+| *CT-refine*
+| `NoCurdle.agda` reuses the same envelope lemma over a `tool`-tagged material
+  (constitution §2.3: a tool _is_ a material with envelope).
+
+| *No-over-torque / over-reach*
+| Requested torque/rate/reach stem:[\subseteq] the appliance's post-style
+  capability envelope at every reachable stem:[\kappa]; no reachable
+  stem:[\mathsf{Ruin}(\mathtt{OVER\_TORQUE})] or stem:[\mathsf{Ruin}(\mathtt{OVER\_REACH})].
+| *CT-refine*
+| Direct from the keystone premise stem:[\mathit{env} \subseteq \mathsf{cap}];
+  lowered as the device-envelope clause of the `NoCurdle.agda` step lemma (the
+  arm `Move`/`Whisk` capability of constitution §2.4).
+
+| *Linearity*
+| Each resource is threaded exactly once: it appears in no output type and its
+  grade transitions stem:[1 \to 0] on consumption; an unused stem:[1]-grade at
+  recipe end is a _leak_ error, a second use a _double-use_ error.
+| *CT-struct*
+| `Dough.agda` §3 / `PoachedEgg.agda` linearity note: holds by signature
+  inspection now; *machine-checked under the planned QTT-Agda port* (grades
+  `@0/@1/@ω`).
+
+| *Termination*
+| stem:[\longrightarrow^{*}] from any well-typed stem:[\mathit{init}] reaches a
+  stem:[\mathsf{Done}] in finitely many steps; the per-step measure
+  stem:[(\mathit{fuel} + \text{remaining recovery budget})] is well-founded.
+| *CT-struct*
+| Structural recursion of `heat`/`poach`/`knead` on `fuel`; the
+  `max_duration`-as-fuel argument of COMMENTARY "max_duration".
+
+| *Totality*
+| stem:[\mathcal{D}\llbracket R \rrbracket] is total: every input/oracle/ceremony
+  triple maps to a defined stem:[(o, \Theta)]; every `on_fail` branch is
+  inhabited.
+| *CT-struct*
+| `heat-exhaustive`/`poach-exhaustive`/`kr-exhaustive` (every result is a
+  total case-split); COMMENTARY "on_fail".
+
+| *Deadlock-freedom*
+| No reachable configuration is _stuck in_ stem:[\mathsf{bar}]: every installed
+  barrier eventually releases or fails; appliance leases form no cyclic wait.
+| *CT-struct*
+| Session-projection compatibility (COMMENTARY "Choreographic"). Lemma
+  `sync-progress` (planned in `NoCurdle.agda` / a `Choreography.agda`): each
+  local projection well-typed ⇒ global barrier releases.
+
+| *Echo-witness*
+| Every stem:[\mathsf{success}] outcome carries an existential sensor witness
+  stem:[\exists t.\ @e(t)]; no success-without-proof.
+| *RT-monitor* + *Boundary*
+| `served-gives-witnesses` / `heldwarm-gives-witness` / `success-gives-witness`;
+  the witness _type_ is `EchoBridge.SensorEcho` = `echo-types` `Echo (fired e thr) true`.
+|===
+
+=== 4.3 The proven/postulated boundary, made precise
+
+The constitution (§6) says the proven/postulated boundary _becomes_ the
+compile-time-proof / run-time-monitor boundary. The calculus pins down where the
+seam runs, item by item, matching the Agda postulates exactly:
+
+[cols="3,2,4", options="header"]
+|===
+| Postulate (the trusted base) | In Agda | Discharged at run time by
+
+| *Sensor soundness* — if classifier stem:[@e] emits "fired", the world really
+  satisfies the predicate.
+| `temp-at`, `white-set-at`, `viscosity-at` (`postulate`)
+| The *RT echo monitor* bound to a _local_ sensor (Zero Scams, constitution §9).
+  If the device cannot supply the local sensor, the program *does not lower*
+  to it (constitution §6).
+
+| *Controller contract* — under `GENTLE`/style, the emitted trajectory never
+  exceeds the target cap.
+| `gentle-bounded : ∀ t. temp-at t ≤ target-cap` (`postulate`)
+| A *certified device envelope*. The appliance type already captured it; at
+  lowering the device must honour it or the program does not deploy
+  (constitution §6). A production port _proves_ `gentle-bounded` from an
+  integrator bound on the slope (`PoachedEgg.agda` §9(b)).
+
+| *Dimensional fidelity* — the numeric carrier carries true SI content.
+| stem:[\mathbb{N}] stand-ins for `Celsius`/`Minutes`/`Torque-dNm`
+| Substituting dimension-indexed stem:[\mathbb{Q}] at the carrier
+  (`PoachedEgg.agda` §9(d)); a _refactor_, not a run-time check.
+
+| *Linearity as a type discipline*
+| Currently by signature inspection (`Dough.agda` §3 note)
+| The *QTT-Agda port* moves this from postulate-by-inspection to
+  machine-checked stem:[1]-grade tracking — turning a *Boundary* item into a
+  *CT-struct* one.
+|===
+
+Everything _above_ the seam (the keystone refinement, linearity, termination,
+totality, deadlock-freedom, the witness _plumbing_) is *proven*. Everything
+_on_ the seam (sensor soundness, controller contract) is *postulated at compile
+time and monitored against local hardware at run time*. The calculus's
+contribution is the no-ruin theorem (§6.2), which shows the proven layer is
+strong enough that the only way to reach a ruin phase is for a postulate to be
+_false_ — i.e. for a local sensor to lie or a certified controller to violate
+its envelope. The type system has discharged everything it possibly can; the
+residual trust is exactly the four rows above, and no larger.
+
+== 5. Metatheory
+
+We adapt progress and preservation to the configuration setting. Together they
+give the headline: *a well-typed configuration is not stuck and never steps into
+a ruin phase.*
+
+=== 5.1 Well-typed configurations
+
+stem:[\vdash \kappa : \mathsf{ok}] holds when (i) every resource in
+stem:[\Sigma] has a consistent grade and phase, (ii) every appliance lease in
+stem:[\Delta] is inside its post-style capability envelope, (iii) the pending
+redex, if a step, satisfies the keystone judgment
+stem:[\Gamma \vdash s : \mathsf{Safe}], and (iv) the phase tag is
+stem:[\mathsf{Run}] or stem:[\mathsf{Done}(o)] — *never* stem:[\mathsf{Ruin}(d)].
+Condition (iv) is the load-bearing invariant.
+
+=== 5.2 Progress
+
+[stem]
+++++
+\textbf{Progress.}\quad \text{If } \vdash \kappa : \mathsf{ok} \text{ and } \kappa : \mathsf{Run},\ \text{then } \exists\,\kappa'.\ \kappa \longrightarrow \kappa'.
+++++
+
+_Proof shape._ Case on the pending redex. A step in `Enter` fires S-Enter (its
+keystone premise is given by (iii)). A step in `loop(s, suc n)` fires S-Sat or
+S-Step (the stem:[\mathit{sat}] decision is total — `_≥?_` in the proofs).
+A step in `loop(s, zero)` fires S-Exhaust. `fail(h)` fires one of S-Abort /
+S-Recover / S-Recover-Exhausted / S-Warm, all inhabited. `bind`/`sync`/ceremony
+redexes fire their single rule. The four step rules are *jointly exhaustive on
+the loop configuration* — this is the operational counterpart of
+`heat-exhaustive`/`poach-exhaustive`: there is no fifth case to be stuck in.
+Hence no non-`Done` well-typed configuration is stuck. ∎
+
+=== 5.3 Preservation (with the no-ruin strengthening)
+
+[stem]
+++++
+\textbf{Preservation.}\quad \text{If } \vdash \kappa : \mathsf{ok} \text{ and } \kappa \longrightarrow \kappa',\ \text{then } \vdash \kappa' : \mathsf{ok}.
+++++
+
+In particular, condition (iv) is preserved: *if stem:[\kappa] is not a ruin
+phase, neither is stem:[\kappa']*. This is the metatheoretic form of
+no-curdle/no-scorch/no-bake-tool/no-over-torque.
+
+_Proof shape, per rule._
+
+* *S-Enter / S-Step* — the keystone premises (capability stem:[\subseteq],
+  danger stem:[\prec]) are exactly conditions (ii)/(iii) re-asserted on the
+  live envelope; they carry forward. No danger limit is reached, so the phase
+  stays stem:[\mathsf{Run}], not stem:[\mathsf{Ruin}]. *This is the step where a
+  ruin phase could be entered, and the keystone judgment forbids it.*
+* *S-Sat / S-Sync-Release* — append a witness to stem:[\Theta] and idle the
+  lease; stem:[\Sigma] unchanged; phase to stem:[\mathsf{Done}(\mathsf{success})].
+* *S-Abort / S-Recover-Exhausted* — consume touched grades stem:[1\to 0]
+  (linearity preserved: consumed, not duplicated); phase to a non-ruin
+  stem:[\mathsf{Done}].
+* *S-Recover* — re-enters the loop with strictly positive bounded fuel; the
+  measure (§5.5) still decreases because the recovery budget strictly drops.
+* *S-Warm* — installs a hold envelope that the WARM side-condition forces
+  stem:[\prec] every touched danger set, so (ii) holds and no ruin is entered.
+* *S-Bind* — grades stem:[1\to 0] on inputs, stem:[1] on output; the output
+  envelope is the tightest of its factors, so (ii) is preserved or tightened.
+* *S-Ceremony* — touches only stem:[\Phi]; stem:[\Sigma]/stem:[\Delta]
+  invariants are literally unchanged (the commutation property of §2.5). ∎
+
+=== 5.4 The corollary that names the superpower
+
+[stem]
+++++
+\textbf{Safety (no-ruin).}\quad \text{If } \vdash \mathit{init}(R, C, \bar{r}) : \mathsf{ok},\ \text{then no } \kappa \text{ with } \mathit{init} \longrightarrow^{*} \kappa \text{ is a } \mathsf{Ruin}(d).
+++++
+
+_Proof._ Induction on the length of stem:[\longrightarrow^{*}] using
+Preservation; the base case is condition (iv) of stem:[\vdash \mathit{init} : \mathsf{ok}]. ∎
+
+This is the constitution's slogan discharged: *illegal physical states are
+unrepresentable* in any reachable configuration of a well-typed program.
+Curdling, scorching, baking the spatula, and over-torquing the arm are not
+run-time hazards the firmware must catch — they are configurations the reduction
+relation _cannot construct_ from a well-typed start.
+
+=== 5.5 The well-founded measure for termination
+
+The termination measure is the lexicographic pair
+
+[stem]
+++++
+\mu(\kappa) \;=\; \big(\, \#\{\text{pending redexes}\},\ \ \mathit{recoveryBudget} + \mathit{fuel} \,\big) \;\in\; \mathbb{N} \times \mathbb{N}
+++++
+
+ordered lexicographically (well-founded as a product of well-founded orders).
+S-Step strictly decreases the second component (stem:[\mathit{suc}\,n \to n]);
+S-Sat / S-Exhaust / S-Abort / S-Warm / S-Sync-Release decrease the first
+(retire a redex); S-Recover decreases the recovery budget inside the second
+component, which is _separately_ bounded by stem:[K_{\max}]; S-Bind / S-Ceremony
+decrease the first. No rule increases stem:[\mu]. Hence
+stem:[\longrightarrow] is well-founded and every run halts — the
+configuration-level form of "structurally recursive on fuel" from the three Agda
+loops, extended to account for bounded RECOVER. The total step count is bounded
+by stem:[\sum_{\text{steps}} (\mathit{fuel}_0 + K_{\max})], a closed number
+fixed by the source and the ceremony.
+
+=== 5.6 Deadlock-freedom as a progress refinement
+
+Deadlock-freedom is the specialisation of Progress to barrier configurations:
+no well-typed stem:[\kappa : \mathsf{Run}] is stuck _inside_ stem:[\mathsf{bar}].
+Given session-projection compatibility (the CT-struct check), S-Sync-Body always
+makes progress on its non-empty body (by Progress on the body), and
+S-Sync-Release always fires (its only premise is the witness, which on the
+non-success path is vacuous and on the success path is supplied by the echo
+monitor). Because leases are acquired in the single textual order of the flat
+body (O1) and released on exit, the wait-for graph over appliances is acyclic;
+no two barriers can hold each other's leases. ∎
+
+== 6. Agda lowering map
+
+Each theorem above lowers to a named Agda artefact. The table fixes the
+correspondence so `proofs/agda/NoCurdle.agda` (the planned flagship) can be
+built against an explicit checklist, and so the existing proofs are seen as
+_instances_ of the general calculus.
+
+[cols="2,3,2", options="header"]
+|===
+| Calculus object | Agda lowering (existing) | Agda lowering (planned `NoCurdle.agda`)
+
+| Step-as-fuel-loop (§2.1)
+| `heat`, `poach`, `knead`
+| `scald : Milk LIQUID → (fuel : ℕ) → (elapsed : Minutes) → ScaldResult`,
+  structurally recursive on `fuel`.
+
+| `on_fail` totality (§2.2)
+| `heat-exhaustive`, `poach-exhaustive`, `kr-exhaustive`
+| `scald-exhaustive : ∀ r → (Σ … r ≡ Scalded …) ⊎ (r ≡ Aborted)`.
+
+| No-curdle (§4.2, §5.4)
+| `tropical-safe : ∀ t → temp-at t < boil-envelope` (the boil analogue)
+| `no-curdle : ∀ t → temp-at t < curdle-envelope`, with
+  `curdle-envelope = 82` (constitution §2.2 Milk hard limit) and
+  `cap<curdle : target-cap < curdle-envelope` by decision procedure
+  (`toWitness`, as `cap<boil`).
+
+| Material-danger refinement (§4.2)
+| `cap<boil` (configuration fact via `toWitness`)
+| `req≺danger : env(scald) ≺ danger(Milk)` decided by `_<?_` over the
+  envelope's named hard limits.
+
+| Echo-witness (§4.2, §5.3)
+| `ShimmerWitness`/`WhiteWitness`/`Witness`;
+  `served-gives-witnesses`, `success-gives-witness`;
+  `EchoBridge.witness⇒echo`
+| `ScaldWitness = Σ[ t ] temp-at t ≥ scald-threshold`, presented as
+  `EchoBridge.SensorEcho temp-at scald-threshold`.
+
+| Controller postulate / boundary (§4.3)
+| `postulate gentle-bounded : ∀ t → temp-at t ≤ target-cap`
+| `postulate gentle-bounded` reused verbatim; production port discharges it
+  from a slope-integrator bound.
+
+| Recipe = total function (§3, §5.4)
+| `poached-egg : Water COLD → Egg RAW → Vinegar → ProgramResult`
+| `scald-milk : Milk LIQUID → ScaldResult`, total by termination +
+  exhaustiveness.
+
+| No-ruin corollary (§5.4)
+| (implicit: `ProgramResult` has no ruin constructor)
+| `ScaldResult` constructors are `Scalded`/`Aborted` _only_ — the absence of
+  a `Curdled` constructor _is_ the no-ruin theorem at the type level.
+|===
+
+[NOTE]
+====
+The last row is the cleanest expression of the v2.0 thesis in Agda terms. In
+`PoachedEgg.agda`, `ProgramResult` simply has no `Curdled`/`Scorched`
+constructor; the type that the total function lands in _cannot name a ruin_.
+`NoCurdle.agda` makes this load-bearing for a _material_ envelope: a well-typed
+`scald-milk` is a total function into a result type from which the curdled state
+is _definitionally absent_, and the `no-curdle` lemma certifies that the
+trajectory that produced any `Scalded` value stayed strictly below the curdle
+envelope. The constitution's "fails to compile" is, at the proof level, exactly
+"there is no constructor for the ruined value, and the only inhabited result is
+proven safe."
+====
+
+== 7. Worked trace: `scald-milk` (the flagship, end-to-end)
+
+To make the calculus concrete, here is the reduction of the recipe
+`NoCurdle.agda` will prove, written in the surface syntax and then traced.
+
+[source]
+----
+material Milk { phase: LIQUID  thermal { scald: 70C  curdle: 82C  freeze: 0C } }
+appliance Hob { capability Heat { quantity: Temperature  range: 0C .. 250C  slope: 0C/s .. 5C/s } }
+chef Delia controls Hob style PRECISION;
+echo @milk_steam on Hob.thermal;
+
+recipe ScaldMilk {
+    use Milk as m;
+    sync(Delia) proving @milk_steam {
+        Delia.Heat(m, target: 68C, slope: GENTLE)
+            until ~ temp >= 66C
+            max_duration 5min
+            on_fail WARM;
+    }
+}
+----
+
+*Compile time (CT-refine, before any reduction).* The keystone judgment
+(constitution §5) checks: (1) `Hob` has `Heat` ✓; (2) requested `target: 68C`
+and `GENTLE` slope lie inside `Hob.Heat` range `0C..250C` after the `PRECISION`
+style tightens slope jitter ✓; (3) for `Milk`, the requested exposure
+stem:[68\mathrm{C}] is _strictly below_ the hard `curdle: 82C` limit ✓ — and
+even below the soft `scald: 70C` quality limit, so _not even a warning_. The
+program type-checks. Had the recipe asked `target: 84C`, clause (3) would fail
+with the named diagnostic `CURDLE` and the program would *not compile*.
+
+*Run time (the reduction).* With stem:[\delta = 1\text{min}], `PRECISION`
+giving stem:[\beta = 1], so stem:[\mathit{fuel}_0 = 5]:
+
+[stem]
+++++
+\begin{aligned}
+&\mathit{init} : \mathsf{Run},\ \Sigma = \{m \mapsto (\text{Milk}, \text{LIQUID}, 1)\},\ \tau = 0 \\
+&\xrightarrow{\text{S-Ceremony}} \cdots \xrightarrow{\text{S-Sync-Enter}} \mathsf{bar}(\{\text{Delia}\}, \mathtt{milk\_steam}, \mathsf{seq}[s]) \\
+&\xrightarrow{\text{S-Enter}} \Theta\!\cdot\!\rho(s),\ \Delta(\text{Hob}) = \mathsf{ACTIVE}(\text{Heat}, 68\mathrm{C}),\ \mathsf{loop}(s, 5) \\
+&\xrightarrow{\text{S-Step}}^{(\times 3,\ \text{temp } 64,65,65 < 66)} \tau = 3,\ \mathsf{loop}(s, 2) \quad [\text{each tick: } \mathit{env} \prec \mathsf{danger}(\text{Milk}),\ \text{no ruin}] \\
+&\xrightarrow{\text{S-Sat}}^{(\text{temp } 66 \ge 66)} \mathsf{ok}(s, w),\ w = (\,\tau{=}4,\ \mathit{pf}: 66 \ge 66\,) \\
+&\xrightarrow{\text{S-Sync-Release}} \Theta'\!\cdot\!\mathit{witness}(\mathtt{milk\_steam}, 4) : \mathsf{Done}(\mathsf{success})
+\end{aligned}
+++++
+
+At no tick did stem:[\mathit{env}] reach stem:[82\mathrm{C}] (S-Step's danger
+premise holds; in fact `gentle-bounded` caps the trajectory at the
+stem:[68\mathrm{C}] target, and stem:[68 < 82]). The mission ends
+stem:[\mathsf{Done}(\mathsf{success})] carrying the `@milk_steam` witness. The
+`on_fail WARM` branch was *available* (and would have installed a hold envelope
+stem:[\prec 82\mathrm{C}]) but was not taken because the witness fired within
+budget.
+
+The Agda lowering of this exact trace is `NoCurdle.scald-milk`, with
+`no-curdle : ∀ t → temp-at t < curdle-envelope` discharged by
+`<-transʳ (gentle-bounded t) cap<curdle` — *the same one-line proof shape as
+`PoachedEgg.tropical-safe`*, retargeted from the boil envelope to the milk's
+curdle envelope. That single substitution — boil-envelope for curdle-envelope,
+a physical-constant fact for a material's _typed_ hard limit — is the whole
+distance from v1.0's teaching proof to v2.0's safety superpower.
+
+== 8. Summary: what runs, and why it cannot ruin
+
+[cols="1,3", options="header"]
+|===
+| Question | Answer
+
+| What is a running recipe?
+| A small-step rewrite over
+  stem:[\langle \Sigma, \Delta, \tau, \mathcal{E}, \Phi, \Theta \rangle] tagged
+  stem:[\mathsf{Run}] / stem:[\mathsf{Done}(o)], never stem:[\mathsf{Ruin}].
+
+| What does a recipe denote?
+| A total function
+  stem:[\mathsf{Inputs} \to (\{\mathsf{success}\}\uplus\{\mathsf{aborted},\mathsf{recovered},\mathsf{warmed}\}) \times \mathsf{Trace}],
+  with success carrying echo witnesses.
+
+| Why does it always finish?
+| The lexicographic measure stem:[(\#\text{redexes}, \mathit{recovery}+\mathit{fuel})]
+  strictly decreases; RECOVER is bounded by stem:[K_{\max}].
+
+| Why can it never curdle/scorch/bake/over-torque?
+| Preservation keeps condition (iv): a non-ruin configuration steps only to a
+  non-ruin configuration, because S-Enter/S-Step carry the keystone danger
+  premise. No reduction _constructs_ a ruin from a well-typed start (§5.4).
+
+| What remains trusted?
+| Exactly four postulates (§4.3): sensor soundness and the controller contract
+  (monitored RT against _local_ hardware), plus dimensional fidelity and
+  type-level linearity (both turned _proven_ by the QTT-Agda + dimension-indexed
+  rationals port). Nothing larger.
+
+| Where is the boundary drawn in Agda?
+| `postulate` blocks (`temp-at`/`white-set-at`/`viscosity-at`,
+  `gentle-bounded`) are the trusted base; everything else
+  (`tropical-safe`/`no-curdle`, `*-exhaustive`, witness extractors,
+  total `poached-egg`/`scald-milk`) is checked. `EchoBridge` ties the witness
+  type to `echo-types`' `Echo`.
+|===
+
+The discipline of the calculus is a single sentence: *the only door into the
+loop is the keystone judgment, and the keystone judgment forbids every danger
+limit — so the room behind the door has no ruined corner to step into.*

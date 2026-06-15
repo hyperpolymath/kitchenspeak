@@ -1,0 +1,290 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+= KitchenSpeak v2.0 — Design Constitution
+:toc:
+:toclevels: 3
+:icons: font
+
+[NOTE]
+====
+This is the *binding contract* for the v2.0 elevation. The full blueprint
+documents (`docs/spec/`, the other `docs/design/` notes) and the reference
+compiler (`src/compiler/`) elaborate this constitution; they must not
+contradict it. Where a blueprint document needs to refine a definition here,
+it does so by *adding* detail, marked as such — never by silently diverging.
+
+It supersedes nothing in the class's `SPEC.adoc` v1.0: v1.0 remains the
+authoritative teaching artefact. v2.0 is the *production elevation* of the
+same language, and every well-typed v1.0 program is a well-typed v2.0 program
+(with materials/appliances supplied by the standard library).
+====
+
+== 1. Thesis: physics in the types
+
+The v1.0 seven types are a *typing lesson*. v2.0 makes typing the **superpower**:
+physical safety is enforced by the type system, so a program that could
+*curdle the milk*, *scorch the egg*, *bake the spatula*, or *over-torque the
+arm* **fails to compile**.
+
+This is the differentiator. Every other domestic-automation stack — Home
+Assistant YAML, raw Matter clusters, recipe apps, generic robotics
+middleware — orchestrates *untyped commands* and trusts the device firmware
+to refuse the dangerous ones at run time. KitchenSpeak refuses them at
+*compile* time, by carrying the physics of materials and the capability
+envelopes of appliances *in the types*.
+
+.The leap, in one line per layer
+[cols="1,3,3", options="header"]
+|===
+| Layer | v1.0 (teaching) | v2.0 (production)
+
+| Primitive   | SI units | Dimension-indexed quantities; the numeric carrier.
+| Material    | (implicit) | First-class type carrying a *safety envelope* (thermal/mechanical/chemical limits + phase typestate).
+| Appliance   | (implicit) | First-class type carrying a *capability envelope* (what it can do, and within which physical bounds).
+| Tropical    | bounded ramp | Bounded-derivative refinement over a trajectory, *checked against* material + appliance envelopes.
+| Linear      | use-once | Substructural use-once (QTT grades) with typestate transitions.
+| Dyadic      | tensor bind | Irreversible `⊗` with provenance: `Flour ⊗ Water → Dough`.
+| Choreographic | session | Real-time multiparty session types; deadlock-freedom + deadline-meeting.
+| Echo        | oracle witness | The *proven/postulated* boundary becomes the *compile-time-proof / run-time-monitor* boundary.
+| Ceremonial  | ambient effect | Reader effect that re-paces a choreography; proven to commute with linearity.
+|===
+
+The slogan: **make illegal physical states unrepresentable.**
+
+== 2. The core data model
+
+Eight kinds of declaration, plus the mission body. Each is summarised here and
+fully specified in `docs/spec/`.
+
+=== 2.1 Quantity & Dimension (`Primitive`)
+
+A *quantity* is a rational magnitude tagged with a *dimension* drawn from the
+SI base set used by the kitchen:
+
+----
+Dimension ::= Temperature | Time | Mass | Torque | AngularRate
+            | Length | Viscosity | Power | Dimensionless
+            | (Dimension · Dimension) | (Dimension / Dimension)
+----
+
+Literals carry a unit suffix that fixes the dimension: `82C`, `5min`, `300g`,
+`8Nm`, `80rpm`, `4cm`, `0.8Pa·s`, `2C/s`. Arithmetic preserves dimension;
+comparing `82C` with `5min` is a *type error*, not a run-time surprise.
+Internally every quantity is normalised to a base unit + a dimension vector
+(units-of-measure, à la F#/Frink).
+
+=== 2.2 Material (the new keystone type)
+
+A *material* is a substance the kitchen acts on. Its type carries a **safety
+envelope** — the physics that bounds what may be done to it without ruining it
+or making it dangerous:
+
+----
+material Milk {
+  phase:    LIQUID                 // current phase typestate
+  thermal { scald: 70C            // soft limit (quality)
+            curdle: 82C           // HARD limit (ruin)  ← danger
+            freeze: 0C }
+}
+----
+
+Each named thermal limit is classified as `soft` (a quality threshold, warned)
+or `hard` (a ruin/hazard threshold, rejected). The *danger set* of a material
+is its hard limits. A material may also carry `mechanical { … }` limits
+(max shear, max compression) and `chemical { … }` limits (pH band,
+incompatible-with set). Phase is a typestate; transitions
+(`RAW → COOKED`, `LIQUID → SET`, `WHOLE → CURDLED`) are tracked, and the
+*ruin* phases (`CURDLED`, `SCORCHED`, `BURNT`) are absorbing failure states
+the checker forbids entering.
+
+=== 2.3 Tool
+
+A *tool* is an inert implement (not actively controlled) that nonetheless has
+material limits — the spatula. Modelled as a material with a `material:` tag
+and its own envelope:
+
+----
+tool Spatula { material: SILICONE  thermal { melt: 260C  char: 320C } }
+----
+
+"Bake the spatula" = exposing a tool to a temperature at or above its hard
+limit. A compile error.
+
+=== 2.4 Appliance (the capability envelope)
+
+An *appliance* is an actively-controlled device. Its type lists *capabilities*,
+each a verb plus the *envelope* within which the device can physically and
+safely act:
+
+----
+appliance Hob {
+  capability Heat { quantity: Temperature  range: 0C .. 250C  slope: 0C/s .. 5C/s }
+}
+appliance Oven { capability Bake { quantity: Temperature  range: 50C .. 300C } }
+appliance Arm  {                       // ROS 2 robot arm
+  capability Move  { quantity: Torque  range: 0Nm .. 8Nm  reach: 0cm .. 85cm }
+  capability Whisk { quantity: AngularRate range: 0rpm .. 1200rpm }
+}
+----
+
+An appliance's capability envelope is what the *device* can do; a material's
+safety envelope is what the *substance* can take. A step is safe only inside
+the **intersection** of the two.
+
+=== 2.5 Resource, Chef, Echo, Ceremony
+
+* *Resource* — a *linear instance* of a material brought into a mission
+  (`use Milk as m;`). Used exactly once; consumed or transformed by actions.
+* *Chef* — a persona that *controls* one or more appliances with a *style*
+  envelope modifier (`chef Delia controls Hob style PRECISION;`). Style tightens
+  slopes/jitter; it can only *shrink* envelopes, never widen them.
+* *Echo* — a postulated sensor oracle bound to a modality
+  (`echo @white_set on Hob.visual;`); witnesses a physical predicate.
+* *Ceremony* — an ambient context (`ceremony Sunday { pace: SLOW; … }`) that
+  re-paces a mission; provably cannot duplicate or discard resources.
+
+== 3. The mission body & the step
+
+----
+recipe <Name> [under <Ceremony>] {
+    <local-decl>*                       // mission-scoped resources, binds
+    <stmt>*
+}
+
+stmt   ::= sync_block | bind_step | use_decl | resource_decl
+sync   ::= sync "(" actor (, actor)* ")" [ "proving" "@"echo ] "{" step+ "}"
+bind   ::= "(" res (, res)+ ")" "<~>" actor "->" res ";"     // dyadic
+step   ::= actor "." Verb "(" target [, arg]* ")"
+           "until" condition
+           "max_duration" qty
+           "on_fail" ( ABORT | RECOVER | WARM ) ";"
+arg    ::= ident ":" ( qty | slope_tag | ident )
+cond   ::= "~"  metric cmp qty           // tropical threshold
+         | "@" echo  cmp value           // echo witness
+----
+
+The three production-mandatory constructs (`until`, `max_duration`, `on_fail`)
+are *non-optional* — a step missing any is a type error. They make every
+`sync_block` a total function into `{success} ⊎ {aborted, recovered, warmed}`.
+
+== 4. The typed AST (binding shape for `src/compiler/`)
+
+The OCaml AST mirrors this constitution one-to-one. Authoritative module:
+`src/compiler/ast.ml`. Shape (abbreviated):
+
+----
+type dim   = Temperature | Time | Mass | Torque | AngularRate
+           | Length | Viscosity | Power | Dimensionless | Mul of dim*dim | Div of dim*dim
+type qty   = { mag : float; dim : dim }            (* magnitude in base unit *)
+type limit_kind = Soft | Hard
+type limit = { name : string; kind : limit_kind; value : qty }
+type envelope = { thermal : limit list; mechanical : limit list; chemical : limit list }
+type material = { mname : string; phase : string; env : envelope; tool_of : string option }
+type capability = { verb : string; quantity : dim; lo : qty; hi : qty;
+                    slope : (qty*qty) option; reach : (qty*qty) option }
+type appliance  = { aname : string; caps : capability list }
+type step = { actor:string; verb:string; target:string; args:(string*arg) list;
+              cond:cond; max_dur:qty; on_fail:fail }
+... (sync_block, bind_step, recipe, program)
+----
+
+== 5. The physical-safety judgment (the keystone rule)
+
+A step `actor.Verb(target, args…)` is **physically safe** iff, letting
+`cap = capability(appliance(actor), Verb)` and `req = requested envelope from args`:
+
+[stem]
+++++
+\frac{
+  \text{cap exists} \quad
+  \text{req} \subseteq \text{cap (device envelope, after style)} \quad
+  \forall m \in \text{materials-touched}(target).\ \text{req} \prec \text{danger}(m)
+}{
+  \Gamma \vdash \texttt{actor.Verb(target, args)} : \mathsf{Safe}
+}
+++++
+
+Read operationally, the checker proves three things for every step:
+
+1. *Capability* — the controlling appliance actually has verb `Verb`.
+2. *Device envelope* — every requested quantity (target temp, slope, torque,
+   rpm, reach) lies inside the appliance's capability range *after* the chef
+   style modifier has been applied. (Style may only shrink the range.)
+3. *Material safety* — for every material and tool the step touches, the
+   requested exposure is strictly below every *hard* limit relevant to the
+   verb's quantity. At/above a hard limit ⇒ rejected with a named diagnostic
+   (`CURDLE`, `SCORCH`, `MELT_TOOL`, `OVER_TORQUE`, `OVER_REACH`). Below a
+   *soft* limit but above the quality threshold ⇒ a *warning*, not an error.
+
+Plus the structural obligations:
+
+* *Linearity* — each resource is consumed exactly once (use-once); an unused
+  resource at recipe end is a *leak* error; a twice-used resource is a
+  *double-use* error.
+* *Termination* — every step carries `max_duration` (well-founded measure).
+* *Totality* — every step carries `on_fail` (the failure branch is inhabited).
+* *Witness* — a `sync … proving @e` block requires `@e` to be a declared echo
+  whose modality the controlling appliance offers.
+
+== 6. HAL projection & the trust boundary
+
+A well-typed program lowers to an abstract *capability trace*: a sequence of
+`(actor, verb, envelope, until, max_dur, on_fail, witness?)` records. Backends
+project the abstract trace to a concrete wire protocol:
+
+[cols="1,3", options="header"]
+|===
+| Backend | Projection
+| Matter  | capability → Matter cluster/attribute writes (e.g. Heat → Temperature Control cluster).
+| MQTT    | capability → topic + JSON payload on a local broker (Zero Scams: no cloud).
+| ROS 2   | capability → action goal on a `control_msgs` action server (arm Move/Whisk).
+|===
+
+The **proven/postulated boundary becomes a run-time trust boundary**: the
+compile-time safety proof holds *given* the echo postulates and the GENTLE/style
+controller contracts. At lowering, each echo postulate must be discharged by a
+*local* sensor binding (Zero Scams — §6 SPEC) and each controller contract by a
+device whose certified envelope the appliance type already captured. If a target
+device cannot supply a required local sensor or cannot honour an envelope, the
+program **does not lower to that device** — the type that made it safe is the
+same type that gates deployment.
+
+== 7. "Prove the stuff" — the proof obligations
+
+Each safety property has a corresponding machine-checked theorem, lowered to
+Agda now (Lean 4 reserved, ADR 0001):
+
+[cols="1,3", options="header"]
+|===
+| Property | Theorem (recipe-level)
+| No-curdle / no-scorch | the bounded controller trajectory never reaches a material's hard thermal limit (generalises `PoachedEgg.tropical-safe`).
+| No-bake-tool | a tool's exposure never reaches its melt/char limit.
+| No-over-torque | the requested torque/rate never exceeds the appliance envelope.
+| Linearity | each resource appears in no output type and is threaded once (QTT-Agda port).
+| Termination + totality | every loop is structurally recursive on its `max_duration` fuel; every result is a total case-split.
+| Echo witness | every success carries an existential sensor witness.
+|===
+
+`proofs/agda/NoCurdle.agda` is the v2.0 flagship: the material-envelope analogue
+of `PoachedEgg.agda`, proving a `ScaldMilk` recipe keeps milk strictly below its
+curdle envelope.
+
+== 8. Repository layout for the elevation
+
+----
+docs/spec/        lexical grammar, concrete grammar v2, type-system rules (normative)
+docs/design/      this constitution + semantics, HAL, stdlib design notes
+src/compiler/     OCaml reference front end + checker (dependency-free; dune)
+  lexer.ml parser.ml ast.ml types.ml env.ml stdlib.ml check.ml hal.ml main.ml
+examples/v2/      well-typed recipes (scald-milk, poached-egg, sear, mayo, plate)
+examples/v2/negative/  recipes that MUST be rejected, each annotated with its error
+proofs/agda/      Dough, PoachedEgg, EchoBridge (re-homed) + NoCurdle (new)
+tests/            accept/reject test runner over the corpus
+----
+
+== 9. Non-negotiables (inherited from v1.0, kept in v2.0)
+
+* *Zero Scams* — safety-critical echoes resolve against *local* sensors only.
+* *Hardware-agnostic* — one recipe lowers to Matter, MQTT, and ROS 2 alike.
+* *Agda-Proven* — the core recipe library type-checks with zero unsolved goals.
+* *Backwards-compatible* — every well-typed v1.0 program remains well-typed.

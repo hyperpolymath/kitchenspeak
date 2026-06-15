@@ -1,0 +1,966 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+= KitchenSpeak v2.0 — The Complete Concrete Grammar (EBNF)
+:toc:
+:toclevels: 3
+:icons: font
+:stem: latexmath
+
+[NOTE]
+====
+This document is the *normative concrete grammar* for KitchenSpeak v2.0. It
+elaborates the binding constitution (`docs/design/0001-v2-constitution.adoc`)
+and the class's `SPEC.adoc` v1.0. It *adds precision* and *closes open items*;
+it does not contradict the constitution. Where the constitution gives a sketch
+production (e.g. §2.6 of the constitution's `recipe`/`stmt`/`step` sketch in
+its §3), this document supplies the full, LL(k)/recursive-descent-friendly
+form, and any difference is a *refinement marked as such*, never a silent
+divergence.
+
+Provenance of every production is tagged in the right margin of the listings:
+
+[cols="1,5", options="header"]
+|===
+| Tag | Meaning
+| `[A]`   | *Inherited from v1.0* (`grammar.ebnf` Section A), unchanged.
+| `[A/P]` | *v1.0 patch* (`grammar.ebnf` Section B), carried into v2.0.
+| `[N]`   | *NEW in v2.0* — introduced to carry the constitution's physics-in-types.
+| `[R]`   | *Refined* — a v1.0 production whose body is widened/tightened for v2.0, backwards-compatibly.
+|===
+
+*Backwards-compatibility theorem (informal).* Every well-typed v1.0 program is
+a well-typed v2.0 program. The grammar guarantees the syntactic half: every
+v1.0 production is either inherited verbatim `[A]`/`[A/P]` or refined `[R]` by
+*adding alternatives and optional clauses only*, never by removing a v1.0
+form. `orchestrate` is retained as a deprecated synonym for `recipe`
+(§<<recipe>>), so a v1.0 file parses unchanged. The semantic half (stdlib
+supplies materials/appliances) is the constitution's §0 promise and is out of
+scope here.
+====
+
+== 1. Notation and conventions
+
+This grammar is written in ISO/IEC 14977 EBNF with the house relaxations used
+in `grammar.ebnf`:
+
+[cols="1,4", options="header"]
+|===
+| Form | Meaning
+| `"lit"`        | terminal literal (keyword, punctuation, operator)
+| `name`         | nonterminal
+| `{ x }`        | zero or more `x`
+| `[ x ]`        | optional `x` (zero or one)
+| `x \| y`       | alternation
+| `( x )`        | grouping
+| `(* … *)`      | comment
+| `?regex?`      | a lexical class defined by the regular expression (lexer layer)
+|===
+
+*Design contract for the parser.* The whole grammar is *LL(2)*: at most two
+tokens of lookahead disambiguate every production. The two places that need a
+second token are called out in §<<ambiguity>> (the `recipe`-body statement
+dispatch, and the `(` that begins either a `bind_step` or a parenthesised
+sub-expression). Maximal-munch governs the lexer (longest token wins:
+`max_duration` is one keyword, not `max` `_` `duration`); explicit operator
+precedence governs the expression grammar (§<<expr>>).
+
+== 2. Lexical grammar (closing O3)
+
+v1.0 deferred the lexer entirely (`COMMENTARY.adoc` "Deliberately out of
+scope"; `grammar.ebnf` open item *O3*). v2.0 needs a real lexer because the
+type checker reads *dimensions off literals* (constitution §2.1). This section
+is therefore `[N]`, except where it merely names a v1.0 placeholder.
+
+[source,ebnf]
+----
+(* --- whitespace & comments: not tokens, discarded by the lexer --- *)        (* [N] *)
+ws           = ?[ \t\r\n]+? ;
+line_comment = "//", ?[^\n]*? ;
+block_comment= "/*", ?.*?, "*/" ;            (* non-greedy *)
+
+(* --- identifiers & names (were O3 placeholders in v1.0) --- *)
+identifier   = ?[A-Za-z_][A-Za-z0-9_]*? ;                                       (* [A/P] now concrete *)
+type_name    = ?[A-Z][A-Za-z0-9_]*? ;        (* Material/Tool/Appliance names *) (* [N] *)
+echo_id      = "@", identifier ;                                                (* [A/P] now concrete *)
+ceremony_id  = identifier ;                   (* [A] *)
+resource_id  = identifier ;                   (* [A/P] *)
+actor_id     = identifier ;                   (* [A/P] *)
+actor        = identifier ;                   (* [A] *)
+Verb         = type_name ;   (* capability verbs are PascalCase: Heat, Move *)   (* [R] *)
+metric       = identifier ;                   (* temp, torque, viscosity, rpm *) (* [A] *)
+
+(* --- numeric & dimensioned literals (NEW: carry the dimension) --- *)        (* [N] *)
+integer      = ?-?[0-9]+? ;                   (* [A] now concrete *)
+decimal      = ?-?[0-9]+(\.[0-9]+)? ;
+number       = decimal ;
+
+qty          = number, unit ;                 (* a dimensioned quantity literal *)
+unit         = base_unit | compound_unit ;
+base_unit    = "C"   | "K"    (* Temperature *)
+             | "s"   | "min"  | "h"   (* Time *)
+             | "g"   | "kg"   | "mg"  (* Mass *)
+             | "Nm"           (* Torque *)
+             | "rpm"          (* AngularRate *)
+             | "mm"  | "cm"   | "m"   (* Length *)
+             | "Pa·s"| "Pas"  (* Viscosity; ASCII fallback Pas *)
+             | "W"   | "kW"   (* Power *)
+             | "%"   | ""     (* Dimensionless (empty unit) *) ;
+compound_unit= base_unit, ( "·" | "*" ), base_unit       (* e.g. N·m *)
+             | base_unit, "/", base_unit ;               (* e.g. C/s, 2C/s *)
+----
+
+[NOTE]
+====
+*Maximal munch on units.* `2C/s` lexes as one `qty` token with
+`compound_unit = "C" "/" "s"`, *not* as `2C`, `/`, `s`. The lexer reads the
+longest valid `unit` immediately following a `number`. `82C` is `qty(82,
+Temperature)`; `8min` is `qty(8, Time)`; `0.8Pa·s` is `qty(0.8, Viscosity)`.
+This is the lexical anchor for the constitution's §2.1 promise that "literals
+carry a unit suffix that fixes the dimension."
+====
+
+The reserved keywords (never identifiers):
+
+[source,ebnf]
+----
+keyword = "material" | "tool" | "appliance" | "capability"                     (* [N] *)
+        | "thermal" | "mechanical" | "chemical" | "phase"
+        | "quantity" | "range" | "slope" | "reach" | "jitter"
+        | "soft" | "hard"
+        | "resource" | "chef" | "echo" | "ceremony"                            (* [A/P]/[N] *)
+        | "controls" | "style" | "on" | "as" | "use"                           (* [N] *)
+        | "recipe" | "orchestrate" | "under" | "import"                        (* [R]/[N] *)
+        | "sync" | "proving"                                                    (* [A] *)
+        | "until" | "max_duration" | "on_fail"                                  (* [A] *)
+        | "ABORT" | "RECOVER" | "WARM" ;                                        (* [A] *)
+----
+
+== 3. Top level (closing O2: the missing declarations)
+
+v1.0 named `resource_decl`, `chef_decl`, `echo_decl` but never defined them
+(`grammar.ebnf` open item *O2*; `COMMENTARY.adoc` left their shape to the
+class). v2.0 defines all three, and adds the three new keystone declarations
+the constitution mandates (`material`, `tool`, `appliance` — constitution
+§2.2–§2.4) plus `use_decl` (constitution §2.5).
+
+[source,ebnf]
+----
+program      = { import_decl }, { decl }, recipe, { recipe } ;                  (* [R] *)
+                (* v1.0: program = {decl}, orchestrate{...}.
+                   Refinement: 0..n declarations, then 1..n recipes.
+                   A lone v1.0 `orchestrate{...}` with its decls still parses,
+                   because `orchestrate` is a recipe synonym (§ recipe). *)
+
+import_decl  = "import", string_lit, [ "as", identifier ], ";" ;               (* [N] -- use_decl/library bootstrap, §3.6 *)
+
+decl         = material_decl     (* [N] *)
+             | tool_decl         (* [N] *)
+             | appliance_decl    (* [N] *)
+             | resource_decl     (* [A/P]->[N] closes O2 *)
+             | chef_decl         (* closes O2 *)
+             | echo_decl         (* closes O2 *)
+             | ceremony_decl ;   (* [A/P] *)
+----
+
+The seven kinds of top-level declaration (plus `import`) line up one-to-one
+with the constitution's "Eight kinds of declaration, plus the mission body"
+(§2). The mission body is `recipe` (§<<recipe>>).
+
+=== 3.1 `material_decl` — the safety envelope `[N]`
+
+Directly encodes constitution §2.2.
+
+[source,ebnf]
+----
+material_decl = "material", type_name, "{",
+                  phase_clause,
+                  { envelope_block },
+                "}" ;                                                           (* [N] *)
+
+phase_clause  = "phase", ":", phase_state, [ phase_arrows ] ;
+phase_state   = type_name ;     (* LIQUID, RAW, SET, COOKED, ... *)
+phase_arrows  = "transitions", "{", phase_edge, { ",", phase_edge }, "}" ;
+phase_edge    = phase_state, "->", phase_state, [ "ruin" ] ;
+                (* `ruin` marks an absorbing failure state: CURDLED, SCORCHED *)
+
+envelope_block= thermal_block | mechanical_block | chemical_block ;
+thermal_block = "thermal",    "{", { limit }, "}" ;
+mechanical_block= "mechanical","{", { limit }, "}" ;
+chemical_block= "chemical",   "{", { chem_limit }, "}" ;
+
+limit         = [ limit_kind ], identifier, ":", qty ;
+limit_kind    = "soft" | "hard" ;
+                (* default when omitted: scald/freeze-style names => soft;
+                   curdle/melt/char/burn names => hard. The checker fixes the
+                   default by a name table; explicit soft/hard always wins.
+                   See § Ambiguity for why the keyword is leading, not trailing. *)
+
+chem_limit    = "pH", ":", number, "..", number          (* pH band *)
+              | "incompatible", ":", "{", type_name, { ",", type_name }, "}" ;
+----
+
+.Worked declaration (the curdle-danger keystone)
+[source]
+----
+material Milk {
+  phase: LIQUID transitions { LIQUID -> SET, LIQUID -> CURDLED ruin }
+  thermal { soft scald:  70C
+            hard curdle: 82C        // the danger limit
+            soft freeze:  0C }
+}
+----
+
+=== 3.2 `tool_decl` — inert implement with material limits `[N]`
+
+Constitution §2.3: a tool is a material with a `material:` tag.
+
+[source,ebnf]
+----
+tool_decl    = "tool", type_name, "{",
+                 "material", ":", type_name,        (* SILICONE, STEEL, ... *)
+                 { envelope_block },
+               "}" ;                                                            (* [N] *)
+----
+
+.Worked declaration ("bake the spatula" → compile error source)
+[source]
+----
+tool Spatula { material: SILICONE  thermal { hard melt: 260C  hard char: 320C } }
+----
+
+=== 3.3 `appliance_decl` — the capability envelope `[N]`
+
+Constitution §2.4. Each `capability` is a verb plus its physical envelope. The
+optional `slope`, `reach`, and `jitter` sub-clauses carry the trajectory and
+geometric bounds the physical-safety judgment (constitution §5) intersects
+against material limits.
+
+[source,ebnf]
+----
+appliance_decl= "appliance", type_name, "{",
+                  capability_block, { capability_block },
+                "}" ;                                                           (* [N] *)
+
+capability_block = "capability", Verb, "{",
+                     "quantity", ":", dimension,
+                     "range",    ":", qty, "..", qty,
+                     [ "slope",  ":", qty, "..", qty ],
+                     [ "reach",  ":", qty, "..", qty ],
+                     [ "jitter", ":", qty ],
+                   "}" ;
+
+dimension    = "Temperature" | "Time" | "Mass" | "Torque" | "AngularRate"      (* [N] *)
+             | "Length" | "Viscosity" | "Power" | "Dimensionless"
+             | dimension, ( "·" | "*" ), dimension
+             | dimension, "/", dimension ;
+----
+
+.Worked declarations (Hob, Oven, robot Arm — verbatim from constitution §2.4)
+[source]
+----
+appliance Hob  { capability Heat { quantity: Temperature  range: 0C .. 250C   slope: 0C/s .. 5C/s } }
+appliance Oven { capability Bake { quantity: Temperature  range: 50C .. 300C } }
+appliance Arm  {
+  capability Move  { quantity: Torque       range: 0Nm  .. 8Nm    reach: 0cm .. 85cm }
+  capability Whisk { quantity: AngularRate  range: 0rpm .. 1200rpm }
+}
+----
+
+=== 3.4 `resource_decl`, `chef_decl`, `echo_decl` — closing O2
+
+These three were named-but-undefined in v1.0. Their shapes are fixed here to
+match the worked examples (`examples/poached-egg.ks` uses all three) and the
+constitution §2.5.
+
+[source,ebnf]
+----
+resource_decl= "resource", resource_id, "state", phase_state,                  (* O2: now concrete *)
+               [ "of", type_name ], ";" ;
+               (* v1.0 form: `resource Egg state RAW;` — kept exactly.
+                  v2.0 OPTIONAL `of Material` ties the linear resource to a
+                  declared material's safety envelope. When omitted, the
+                  resource is untyped-material (v1.0 compatibility): the
+                  checker treats its danger set as empty (no envelope to
+                  protect), exactly reproducing v1.0 behaviour. *)
+
+chef_decl    = "chef", actor_id,                                                (* O2: now concrete *)
+               ( "style", style_tag                          (* v1.0 short form *)
+               | "controls", type_name, { ",", type_name },  (* v2.0 controls   *)
+                   [ "style", style_tag ] ),
+               ";" ;
+style_tag    = "PRECISION" | "AGGRESSIVE" | "GENTLE" | identifier ;
+               (* style may only SHRINK envelopes (constitution §2.5);
+                  enforced by the checker, not the grammar. *)
+
+echo_decl    = "echo", echo_id, "on", actor_id, ".", modality, ";" ;           (* O2: now concrete *)
+modality     = "visual" | "acoustic" | "thermal" | identifier ;
+               (* `echo @white_set on Delia_Hob.visual;` (poached-egg.ks) *)
+----
+
+`chef_decl` is `[R]`: it admits *both* the v1.0 short form (`chef Delia_Hob
+style PRECISION;`, used verbatim in `examples/poached-egg.ks`) *and* the v2.0
+`controls` form (constitution §2.5: `chef Delia controls Hob style
+PRECISION;`). LL(2) lookahead on the token after `actor_id` (`style` vs
+`controls`) selects the arm.
+
+=== 3.5 `ceremony_decl` — inherited patch `[A/P]`
+
+Carried unchanged from `grammar.ebnf` Patch 1.
+
+[source,ebnf]
+----
+ceremony_decl    = "ceremony", ceremony_id, "{",                               (* [A/P] *)
+                     ceremony_setting, { ",", ceremony_setting },
+                   "}" ;
+ceremony_setting = setting_key, ":", setting_value ;
+setting_key      = identifier ;
+setting_value    = identifier | integer ;
+----
+
+[[recipe]]
+=== 3.6 `recipe` — the mission body, renaming/extending `orchestrate` `[R]`
+
+Constitution §3 renames `orchestrate` to `recipe` and extends it. v1.0's
+`orchestrate` is retained as a *deprecated synonym* so v1.0 files parse
+unchanged (backwards-compatibility, constitution §9).
+
+[source,ebnf]
+----
+recipe       = recipe_kw, identifier, [ "under", ceremony_id ], "{",           (* [R] *)
+                 { use_decl },              (* mission-scoped linear resources *)
+                 { stmt },
+               "}" ;
+recipe_kw    = "recipe" | "orchestrate" ;   (* `orchestrate` = deprecated synonym *)
+
+stmt         = sync_block | bind_step | use_decl | resource_decl ;             (* [R]; was `block` *)
+----
+
+`stmt` widens v1.0's `block` (`grammar.ebnf` consolidated `block' = sync_block
+| bind_step | resource_decl`) by *adding* the `use_decl` alternative `[N]`;
+every prior alternative is retained, so every v1.0 mission body still parses.
+
+`use_decl` is NEW (constitution §2.5: "`use Milk as m;`"): it brings a linear
+*instance* of a declared material into the mission. It is permitted both as a
+top-of-body header *and* interleaved as a `stmt` (mirroring how v1.0 allowed
+in-body `resource_decl` via Patch 3).
+
+[source,ebnf]
+----
+use_decl     = "use", type_name, "as", resource_id,                            (* [N] *)
+               [ "qty", qty ], ";" ;
+               (* `use Milk as m;`  or  `use Milk as m qty 250g;` *)
+----
+
+== 4. The step and the sync block (closing O1)
+
+=== 4.1 The extended step `[R]`
+
+Constitution §3 extends the v1.0 `step` with a *target argument* and *named
+envelope args*. v1.0's `step` was `actor "." action "(" params ")" until …
+max_duration … on_fail …;` with `params` an undefined placeholder. v2.0 fixes
+`params` as `target [, arg]*` where each `arg` is `name : value`.
+
+[source,ebnf]
+----
+step         = actor, ".", Verb, "(", step_args, ")",                          (* [R] *)
+                 "until",        condition,
+                 "max_duration", qty,
+                 "on_fail",      error_handle, ";" ;
+
+step_args    = [ target [ "," arg_list ] ] ;        (* target first, then named args *)
+target       = resource_id | qty | type_name ;      (* the thing acted on *)
+arg_list     = arg, { ",", arg } ;
+arg          = identifier, ":", arg_value ;          (* NAMED args only after target *)
+arg_value    = qty | slope_tag | resource_id | type_name | style_tag ;
+slope_tag    = "GENTLE" | "STEADY" | "AGGRESSIVE" | qty ;
+               (* slope: GENTLE  (a named slope class)  OR  slope: 2C/s (an explicit rate) *)
+
+error_handle = "ABORT" | "RECOVER" | "WARM" ;                                  (* [A] *)
+----
+
+[IMPORTANT]
+====
+*The three production-mandatory constructs are syntactically non-optional.*
+`until`, `max_duration`, and `on_fail` each appear *without* surrounding `[ ]`
+in the `step` production. A step missing any of the three is a *parse* error
+(and, per the constitution §3 and `COMMENTARY.adoc`, a type error: they are
+the termination witness, the total failure handler, and the postcondition).
+This is exactly the v1.0 contract, preserved.
+====
+
+The constitution §3 sketch writes `step ::= actor "." Verb "(" target [, arg]*
+")"`. This grammar *refines* that sketch by (a) making `target` optional so a
+zero-target capability (e.g. a pure `Heat` of the appliance's own medium) is
+expressible, and (b) fixing `arg` to the `name : value` named-envelope form. A
+v1.0 `Heat(target: 82C, slope: GENTLE)` (from `examples/poached-egg.ks`)
+parses as `target` absent, `arg_list = [target:82C, slope:GENTLE]` — note the
+v1.0 example uses `target:` as a *named arg*, which remains valid because
+`arg.identifier` may literally be `target`. New v2.0 code may instead write
+the egg as a positional `target`: `Poach(Egg, acidulant: Vinegar, depth:
+4cm)`. Both forms parse; see worked parse 1.
+
+=== 4.2 `condition` — the `until` postcondition `[R]`
+
+[source,ebnf]
+----
+condition    = tropical_threshold | echo_witness ;                             (* [A] *)
+tropical_threshold = "~",  metric, comparison, value ;                         (* [A] *)
+echo_witness       = echo_id, comparison, value ;                              (* [R] *)
+                     (* v1.0: "@", metric, cmp, value.
+                        Refinement: echo_id already includes the leading "@",
+                        so `@white_set == true` parses as echo_witness with
+                        echo_id=@white_set. Reproduces v1.0 exactly. *)
+comparison   = ">=" | "<=" | ">" | "<" | "==" | "!=" ;                         (* [A] now concrete *)
+value        = qty | boolean | type_name | number ;                            (* [A] now concrete *)
+boolean      = "true" | "false" ;
+----
+
+[[expr]]
+The expression sub-language is intentionally tiny (no infix arithmetic in
+conditions): a `condition` is exactly one comparison. This keeps the grammar
+LL(2) with no precedence climbing required inside `until`. Dimensioned
+arithmetic (constitution §2.1, "arithmetic preserves dimension") lives in
+`qty` literal normalisation at the lexer/checker, not in a condition
+expression grammar — a deliberate scope boundary that keeps the parser simple.
+
+=== 4.3 `sync_block` and `bind_step` — closing O1 (nesting)
+
+v1.0 (`grammar.ebnf` open item *O1*) forbade nested `sync_block`/`bind_step`
+inside a `sync` body: `step` was the only thing a `sync` could contain. v2.0
+*closes O1* by letting a sync body contain a `sync_item`, which is a `step`, a
+*nested* `sync_block`, or a `bind_step`.
+
+[source,ebnf]
+----
+sync_block   = "sync", "(", actors, ")", [ "proving", echo_id ], "{",          (* [R] closes O1 *)
+                 sync_item, { sync_item },
+               "}" ;
+sync_item    = step | sync_block | bind_step ;     (* O1: nesting now allowed *)
+actors       = actor, { ",", actor } ;                                         (* [A] now concrete *)
+
+bind_step    = "(", resource_id, ",", resource_id, { ",", resource_id }, ")",  (* [A/P] *)
+               "<~>", actor_id, [ "->", resource_id ], ";" ;
+               (* v1.0 Patch 2: `(Flour, Water) <~> Baridi_Robot;`
+                  v2.0 OPTIONAL `-> resource_id` names the product resource,
+                  matching constitution §3's bind sketch
+                  `( res, res+ ) <~> actor -> res ;`. When omitted, the
+                  product is anonymous (v1.0 Dough behaviour). *)
+----
+
+==== O1 resolution: what nesting *means*
+
+A nested `sync_block` inside an outer `sync(A,B){ … }` body denotes a
+*sub-session*: a choreographic sub-barrier among a *subset* (or the same set)
+of the enclosing actors, executed in sequence at the point it appears in the
+parent body. Operationally and type-theoretically (per `COMMENTARY.adoc`
+§Choreographic, multiparty session types):
+
+. *Actor scoping.* The actor set of an inner `sync` must be a *subset* of the
+  enclosing actor set (`actors_inner ⊆ actors_outer`). An actor named inside
+  but not introduced outside is a type error (no projection exists for it in
+  the parent choreography). The grammar permits any `actors`; the checker
+  enforces the subset law.
+
+. *Sequencing & barrier nesting.* The inner barrier opens and closes *within*
+  the outer barrier's lifetime: the outer barrier is released only after every
+  `sync_item` in its body — including completed inner sub-sessions — has
+  terminated (each via its own `success ⊎ {aborted, recovered, warmed}`
+  image). Deadlock-freedom of the whole is the conjunction of deadlock-freedom
+  of each level; because nesting is *lexical* (a tree, not arbitrary
+  cross-edges), no new deadlock cycles are introducible — this is precisely
+  why nesting is safe to admit (it was deferred in v1.0 only for teaching
+  simplicity, `COMMENTARY.adoc` "Deliberately out of scope", not because it
+  was unsound).
+
+. *Witness scoping.* A `proving @e` on the inner block introduces an
+  existential witness scoped to the inner block; it does *not* discharge the
+  outer block's `proving`. Each level carries its own witness obligation
+  (constitution §5 "Witness").
+
+. *Linearity across levels.* A linear resource consumed by an inner step has
+  *left the linear context* for the remainder of the outer body. A `bind_step`
+  nested inside a `sync` consumes its factors at that point and (optionally)
+  introduces the named product into the enclosing scope. This is the
+  constitution's "binding is algebra; sync is physics" placed under a physical
+  barrier when — and only when — the bind must be *coordinated* with a device
+  action (e.g. the robot must hold the bowl while binding). A *top-level*
+  `bind_step` (a `stmt`) remains the pure-algebra form from v1.0 Patch 2.
+
+.Illustrative nested sync (robot arm + hob coordinating a sub-session)
+[source]
+----
+sync(Arm, Hob) proving @plated {
+    Hob.Hold(Pan) until ~ temp <= 60C max_duration 30s on_fail WARM;
+    sync(Arm) proving @placed {                      // nested sub-session
+        Arm.Move(Egg, torque: 6Nm, reach: 40cm)
+            until @placed == true
+            max_duration 20s
+            on_fail RECOVER;
+    }
+}
+----
+
+== 5. The whole grammar shows the constitution's §2 and §3
+
+[cols="1,4", options="header"]
+|===
+| Constitution clause | Production(s) that express it
+| §2.1 Quantity & Dimension | `qty`, `unit`, `base_unit`, `compound_unit`, `dimension`
+| §2.2 Material (safety envelope) | `material_decl`, `phase_clause`, `thermal_block`, `mechanical_block`, `chemical_block`, `limit`, `limit_kind`
+| §2.3 Tool | `tool_decl`
+| §2.4 Appliance (capability envelope) | `appliance_decl`, `capability_block` (`quantity`/`range`/`slope`/`reach`/`jitter`)
+| §2.5 Resource / Chef / Echo / Ceremony | `use_decl`+`resource_decl`; `chef_decl` (`controls`/`style`); `echo_decl` (`on actor.modality`); `ceremony_decl`
+| §3 Mission body | `recipe` (`under <Ceremony>`)
+| §3 `stmt` | `stmt = sync_block \| bind_step \| use_decl \| resource_decl`
+| §3 `sync` | `sync_block` (+ O1 nesting via `sync_item`)
+| §3 `bind` (dyadic `<~>`) | `bind_step` (+ optional `-> res`)
+| §3 `step` (target + named args) | `step`, `step_args`, `target`, `arg`, `arg_value`
+| §3 `cond` | `condition`, `tropical_threshold` (`~`), `echo_witness` (`@`)
+| §3 mandatory `until`/`max_duration`/`on_fail` | non-optional clauses in `step`
+|===
+
+The physical-safety judgment (constitution §5) is a *type-checker* obligation,
+not a grammar one; but the grammar *carries every input the judgment needs*:
+`capability_block` supplies `cap`, `arg`/`step_args` supply the requested
+envelope `req`, `chef_decl` supplies the style modifier, and
+`material_decl`/`tool_decl` supply `danger(m)`. The grammar therefore makes
+the constitution §5 rule *checkable* — every premise has a concrete syntactic
+source.
+
+== 6. Three full worked parses
+
+=== 6.1 The poached-egg port
+
+Concrete syntax (v2.0 port of `examples/poached-egg.ks`; the egg becomes a
+positional `target`, the materials are declared, the chef uses `controls`):
+
+[source]
+----
+material Water { phase: LIQUID thermal { soft scald: 95C  hard boil: 100C } }
+material Egg   { phase: RAW    transitions { RAW -> POACHED } }
+material Vinegar { phase: LIQUID }
+appliance Hob { capability Heat  { quantity: Temperature range: 0C .. 250C slope: 0C/s .. 5C/s }
+                capability Poach { quantity: Temperature range: 0C .. 100C } }
+chef Delia_Hob controls Hob style PRECISION;
+echo @water_shimmer on Delia_Hob.visual;
+echo @white_set     on Delia_Hob.visual;
+ceremony Breakfast_Brisk { pace: BRISK, alert_level: 4, priority: TIMING }
+
+recipe PoachedEgg under Breakfast_Brisk {
+    use Vinegar as vin;
+    sync(Delia_Hob) proving @water_shimmer {
+        Delia_Hob.Heat(target: 82C, slope: GENTLE)
+            until ~ temp >= 80C
+            max_duration 8min
+            on_fail ABORT;
+    }
+    sync(Delia_Hob) proving @white_set {
+        Delia_Hob.Poach(Egg, acidulant: vin, depth: 4cm)
+            until @white_set == true
+            max_duration 4min
+            on_fail RECOVER;
+    }
+}
+----
+
+Parse-tree sketch (recipe body only; declarations elide to their nonterminals):
+
+----
+program
+├─ decl: material_decl Water { phase:LIQUID; thermal[soft scald:82C? -> qty(95,Temp); hard boil:qty(100,Temp)] }
+├─ decl: material_decl Egg { phase:RAW; transitions[RAW->POACHED] }
+├─ decl: material_decl Vinegar { phase:LIQUID }
+├─ decl: appliance_decl Hob { cap Heat{Temp,0..250C,slope 0..5C/s}; cap Poach{Temp,0..100C} }
+├─ decl: chef_decl Delia_Hob controls Hob style PRECISION
+├─ decl: echo_decl @water_shimmer on Delia_Hob.visual
+├─ decl: echo_decl @white_set on Delia_Hob.visual
+├─ decl: ceremony_decl Breakfast_Brisk { pace:BRISK, alert_level:4, priority:TIMING }
+└─ recipe "PoachedEgg" under Breakfast_Brisk
+   ├─ use_decl: use Vinegar as vin
+   ├─ stmt → sync_block
+   │  ├─ actors = [Delia_Hob]
+   │  ├─ proving = @water_shimmer
+   │  └─ sync_item → step
+   │     ├─ actor=Delia_Hob  Verb=Heat
+   │     ├─ step_args: target=∅; arg_list=[ arg(target : qty(82,Temp)),
+   │     │                                   arg(slope  : slope_tag GENTLE) ]
+   │     ├─ until      = tropical_threshold( ~ metric(temp) >= qty(80,Temp) )
+   │     ├─ max_duration = qty(8,Time)
+   │     └─ on_fail    = ABORT
+   └─ stmt → sync_block
+      ├─ actors = [Delia_Hob]
+      ├─ proving = @white_set
+      └─ sync_item → step
+         ├─ actor=Delia_Hob  Verb=Poach
+         ├─ step_args: target = resource_id(Egg);
+         │             arg_list=[ arg(acidulant : resource_id vin),
+         │                        arg(depth     : qty(4,Length)) ]
+         ├─ until      = echo_witness( @white_set == boolean(true) )
+         ├─ max_duration = qty(4,Time)
+         └─ on_fail    = RECOVER
+----
+
+Note the *two valid argument styles in one program*: `Heat` uses the v1.0
+named-arg style (`target:` is just an `arg` whose name happens to be
+`target`), while `Poach` uses the v2.0 positional `target` (`Egg`) followed by
+named args. Both reduce through `step_args`.
+
+=== 6.2 A scald-milk recipe (the constitution §7 flagship)
+
+Concrete syntax — the recipe `NoCurdle.agda` proves; deliberately stays
+strictly below Milk's `hard curdle: 82C`:
+
+[source]
+----
+material Milk {
+  phase: LIQUID transitions { LIQUID -> SET, LIQUID -> CURDLED ruin }
+  thermal { soft scald: 70C  hard curdle: 82C  soft freeze: 0C }
+}
+appliance Hob { capability Heat { quantity: Temperature range: 0C .. 250C slope: 0C/s .. 5C/s } }
+chef Jamie_Hob controls Hob style GENTLE;
+echo @scald_skin on Jamie_Hob.visual;
+
+recipe ScaldMilk {
+    use Milk as m qty 250g;
+    sync(Jamie_Hob) proving @scald_skin {
+        Jamie_Hob.Heat(m, target: 75C, slope: GENTLE)
+            until ~ temp >= 68C
+            max_duration 6min
+            on_fail ABORT;
+    }
+}
+----
+
+Parse-tree sketch:
+
+----
+program
+├─ decl: material_decl Milk
+│        ├─ phase_clause: phase:LIQUID
+│        │   └─ phase_arrows: [ LIQUID->SET, LIQUID->CURDLED ruin ]
+│        └─ thermal_block: [ limit(soft, scald, qty(70,Temp)),
+│                            limit(hard, curdle, qty(82,Temp)),   ◀ danger set = {curdle@82C}
+│                            limit(soft, freeze, qty(0,Temp)) ]
+├─ decl: appliance_decl Hob { cap Heat{Temp, 0..250C, slope 0..5C/s} }
+├─ decl: chef_decl Jamie_Hob controls Hob style GENTLE
+├─ decl: echo_decl @scald_skin on Jamie_Hob.visual
+└─ recipe "ScaldMilk"                       (no `under` — ceremony absent)
+   ├─ use_decl: use Milk as m  qty qty(250,Mass)
+   └─ stmt → sync_block
+      ├─ actors = [Jamie_Hob]
+      ├─ proving = @scald_skin
+      └─ sync_item → step
+         ├─ actor=Jamie_Hob  Verb=Heat
+         ├─ step_args: target = resource_id(m);          ◀ acts on the Milk instance
+         │             arg_list=[ arg(target : qty(75,Temp)),
+         │                        arg(slope  : slope_tag GENTLE) ]
+         ├─ until      = tropical_threshold( ~ temp >= qty(68,Temp) )
+         ├─ max_duration = qty(6,Time)
+         └─ on_fail    = ABORT
+----
+
+Why this *compiles* (and a variant *fails*): the requested setpoint
+`target: 75C` and the `until` ceiling `68C` are both strictly below the milk's
+`hard curdle: 82C`. The constitution §5 material-safety premise
+`req ≺ danger(m)` holds (75C < 82C). Changing `target: 75C` to `target: 90C`
+would parse identically but fail the §5 judgment with diagnostic `CURDLE`
+(90C ≥ 82C). The grammar admits the program; the type system rejects the
+dangerous one — exactly the v2.0 superpower.
+
+=== 6.3 A robot-arm plating step (Torque + reach + nested sync)
+
+Concrete syntax — exercises the `Arm` appliance's `Move`/`Whisk` capabilities,
+the positional `target`, named torque/reach args, and O1 nesting:
+
+[source]
+----
+material Plate    { phase: COLD }
+material Egg      { phase: POACHED }
+appliance Arm {
+  capability Move  { quantity: Torque       range: 0Nm .. 8Nm    reach: 0cm .. 85cm }
+  capability Whisk { quantity: AngularRate  range: 0rpm .. 1200rpm }
+}
+chef Baridi controls Arm style PRECISION;
+echo @placed on Baridi.visual;
+
+recipe PlateEgg {
+    use Egg as e;
+    sync(Baridi) proving @placed {
+        Baridi.Move(e, torque: 6Nm, reach: 40cm)
+            until @placed == true
+            max_duration 20s
+            on_fail RECOVER;
+    }
+}
+----
+
+Parse-tree sketch:
+
+----
+program
+├─ decl: material_decl Plate { phase:COLD }
+├─ decl: material_decl Egg   { phase:POACHED }
+├─ decl: appliance_decl Arm
+│        ├─ capability_block Move
+│        │   ├─ quantity = Torque
+│        │   ├─ range    = qty(0,Torque) .. qty(8,Torque)
+│        │   └─ reach    = qty(0,Length) .. qty(85,Length)
+│        └─ capability_block Whisk
+│            ├─ quantity = AngularRate
+│            └─ range    = qty(0,AngularRate) .. qty(1200,AngularRate)
+├─ decl: chef_decl Baridi controls Arm style PRECISION
+├─ decl: echo_decl @placed on Baridi.visual
+└─ recipe "PlateEgg"
+   ├─ use_decl: use Egg as e
+   └─ stmt → sync_block
+      ├─ actors = [Baridi]
+      ├─ proving = @placed
+      └─ sync_item → step
+         ├─ actor=Baridi  Verb=Move
+         ├─ step_args: target = resource_id(e);
+         │             arg_list=[ arg(torque : qty(6,Torque)),     ◀ 6Nm ∈ [0,8]Nm  ✓
+         │                        arg(reach  : qty(40,Length)) ]   ◀ 40cm ∈ [0,85]cm ✓
+         ├─ until      = echo_witness( @placed == boolean(true) )
+         ├─ max_duration = qty(20,Time)
+         └─ on_fail    = RECOVER
+----
+
+Why this *compiles* (and a variant *fails*): `torque: 6Nm` lies inside the
+`Move` capability's `range: 0Nm .. 8Nm` and `reach: 40cm` lies inside
+`reach: 0cm .. 85cm`. The constitution §5 device-envelope premise
+`req ⊆ cap` holds. Raising `torque: 6Nm` to `torque: 9Nm` parses identically
+but fails §5 with diagnostic `OVER_TORQUE` (9Nm ∉ [0,8]Nm); setting
+`reach: 90cm` fails with `OVER_REACH` (90cm ∉ [0,85]cm). The grammar is the
+same; the capability envelope in the types is what rejects the over-reach.
+
+[[ambiguity]]
+== 7. Ambiguities and how they are resolved
+
+[cols="1,3,3", options="header"]
+|===
+| Site | Potential ambiguity | Resolution
+
+| `stmt` dispatch
+| Four `stmt` alternatives (`sync_block`, `bind_step`, `use_decl`,
+  `resource_decl`) share no common prefix *except* that `bind_step` and a
+  hypothetical parenthesised form both start with `(`.
+| *LL(1) on the keyword.* `sync`→`sync_block`, `use`→`use_decl`,
+  `resource`→`resource_decl`, `(`→`bind_step`. Since `(` uniquely begins
+  `bind_step` (there is no parenthesised statement), one token suffices.
+
+| `bind_step` vs grouping
+| The constitution's §3 sketch shows `(res, res+)`; `(` could in principle
+  open a grouped expression.
+| There are *no* grouped expressions at statement level (the expression
+  sub-language §<<expr>> is conditions only, never statements). `(` at `stmt`
+  position is therefore unambiguously a `bind_step`. LL(2) confirms: the token
+  after the first `resource_id` is `,` or `)`, never an operator.
+
+| `chef_decl` arms
+| `chef A style …` vs `chef A controls …` share the prefix `chef` `actor_id`.
+| *LL(2):* the token after `actor_id` is `style` or `controls`. One extra
+  token of lookahead selects the arm. This is the only LL(2) decision in the
+  declaration grammar.
+
+| `step_args` target vs first named arg
+| `Heat(target: 82C)` — is `target` a positional `target` or a named `arg`?
+| *Maximal-munch favouring named args by syntax shape.* The parser reads the
+  first arg; if it is `identifier ":" value` it is an `arg` (named), so the
+  positional `target` slot is empty. A bare `resource_id`/`qty`/`type_name`
+  *not* followed by `:` is the positional `target`. The grammar makes
+  `target` optional precisely so this is decidable with one token of
+  lookahead after `(`: `IDENT ":"`→named arg; `IDENT ")"`/`IDENT ","`→
+  positional target. Both worked parses 6.1 (`Egg,` positional) and the
+  `Heat(target:…)` named form resolve cleanly.
+
+| `limit_kind` leading vs trailing
+| Should it be `curdle: 82C hard` (trailing) or `hard curdle: 82C` (leading)?
+| *Leading* (`[ limit_kind ], identifier, ":", qty`). Leading keeps the
+  `limit` production LL(1): on `soft`/`hard` the kind is explicit; on any
+  other token the kind defaults via the checker's name table. A trailing
+  keyword would require lookahead past the `qty` to know whether a `limit`
+  has ended, breaking LL(k) for small k.
+
+| unit lexing (`2C/s`)
+| `2C/s` could be `2C` then `/` then `s`.
+| *Maximal munch in the lexer* (§2): the longest valid `unit` following a
+  `number` is consumed as part of one `qty` token. `2C/s` is one
+  `qty(2, Temperature/Time)`.
+
+| keyword vs identifier
+| `Heat` is a `Verb`; could it be a `metric` or `identifier`?
+| *Position-determined, then maximal-munch on reserved words.* Reserved words
+  (§2 `keyword`) are never identifiers. `Verb`/`type_name` are PascalCase by
+  the lexer class (`?[A-Z]…?`); `metric`/`identifier` for lowercase. So
+  `temp` (a `metric`) and `Heat` (a `Verb`) are lexically distinguishable,
+  removing any need for semantic feedback into the lexer.
+
+| `echo_witness` `@`
+| v1.0 wrote `"@", metric, cmp, value`; v2.0 folds the `@` into `echo_id`.
+| `echo_id = "@" identifier` is a single token-ish unit at the lexer; the
+  `echo_witness` production is `echo_id comparison value`, which reproduces
+  the v1.0 token sequence exactly (`@white_set == true`). No ambiguity, and
+  every v1.0 `@metric cmp value` still parses.
+|===
+
+*Operator precedence.* The only operators are the comparison set
+(`>= <= > < == !=`) inside `condition`, the dyadic `<~>` at `bind_step`, the
+range `..`, the unit operators `· * /`, and the phase/product arrows
+`-> <~>`. None of them nest in a way that needs a precedence table: a
+`condition` is exactly one comparison (no chaining), `<~>` is a fixed
+statement form, `..` appears only between two `qty` in `range`/`reach`/`slope`,
+and the unit/arrow operators are confined to their host productions. The
+grammar is therefore unambiguous without a precedence climber — a deliberate
+simplification that keeps the reference recursive-descent parser
+(`src/compiler/parser.ml`, constitution §4/§8) straightforward.
+
+== 8. Consolidated grammar (single listing)
+
+[source,ebnf]
+----
+(* ===== Top level ===== *)
+program       = { import_decl }, { decl }, recipe, { recipe } ;                 (* [R] *)
+import_decl   = "import", string_lit, [ "as", identifier ], ";" ;              (* [N] *)
+decl          = material_decl | tool_decl | appliance_decl                     (* [N] *)
+              | resource_decl | chef_decl | echo_decl                          (* O2 *)
+              | ceremony_decl ;                                                 (* [A/P] *)
+
+(* ===== Declarations ===== *)
+material_decl = "material", type_name, "{", phase_clause, { envelope_block }, "}" ; (* [N] *)
+tool_decl     = "tool", type_name, "{", "material", ":", type_name,
+                  { envelope_block }, "}" ;                                     (* [N] *)
+appliance_decl= "appliance", type_name, "{", capability_block,
+                  { capability_block }, "}" ;                                   (* [N] *)
+phase_clause  = "phase", ":", phase_state, [ phase_arrows ] ;                   (* [N] *)
+phase_arrows  = "transitions", "{", phase_edge, { ",", phase_edge }, "}" ;
+phase_edge    = phase_state, "->", phase_state, [ "ruin" ] ;
+phase_state   = type_name ;
+envelope_block= thermal_block | mechanical_block | chemical_block ;
+thermal_block = "thermal",    "{", { limit }, "}" ;
+mechanical_block = "mechanical","{", { limit }, "}" ;
+chemical_block= "chemical",   "{", { chem_limit }, "}" ;
+limit         = [ limit_kind ], identifier, ":", qty ;
+limit_kind    = "soft" | "hard" ;
+chem_limit    = "pH", ":", number, "..", number
+              | "incompatible", ":", "{", type_name, { ",", type_name }, "}" ;
+capability_block = "capability", Verb, "{",
+                     "quantity", ":", dimension,
+                     "range", ":", qty, "..", qty,
+                     [ "slope", ":", qty, "..", qty ],
+                     [ "reach", ":", qty, "..", qty ],
+                     [ "jitter", ":", qty ], "}" ;
+resource_decl = "resource", resource_id, "state", phase_state,
+                  [ "of", type_name ], ";" ;                                    (* O2 *)
+chef_decl     = "chef", actor_id,
+                  ( "style", style_tag
+                  | "controls", type_name, { ",", type_name }, [ "style", style_tag ] ),
+                  ";" ;                                                         (* O2/[R] *)
+echo_decl     = "echo", echo_id, "on", actor_id, ".", modality, ";" ;          (* O2 *)
+ceremony_decl = "ceremony", ceremony_id, "{",
+                  ceremony_setting, { ",", ceremony_setting }, "}" ;           (* [A/P] *)
+ceremony_setting = setting_key, ":", setting_value ;
+setting_key   = identifier ;  setting_value = identifier | integer ;
+style_tag     = "PRECISION" | "AGGRESSIVE" | "GENTLE" | identifier ;
+modality      = "visual" | "acoustic" | "thermal" | identifier ;
+
+(* ===== Mission body ===== *)
+recipe        = recipe_kw, identifier, [ "under", ceremony_id ], "{",
+                  { use_decl }, { stmt }, "}" ;                                 (* [R] *)
+recipe_kw     = "recipe" | "orchestrate" ;
+use_decl      = "use", type_name, "as", resource_id, [ "qty", qty ], ";" ;     (* [N] *)
+stmt          = sync_block | bind_step | use_decl | resource_decl ;            (* [R] *)
+
+(* ===== Sync, bind, step (O1 closed) ===== *)
+sync_block    = "sync", "(", actors, ")", [ "proving", echo_id ], "{",
+                  sync_item, { sync_item }, "}" ;                              (* [R] O1 *)
+sync_item     = step | sync_block | bind_step ;                               (* O1 *)
+actors        = actor, { ",", actor } ;
+bind_step     = "(", resource_id, ",", resource_id, { ",", resource_id }, ")",
+                  "<~>", actor_id, [ "->", resource_id ], ";" ;               (* [A/P]/[R] *)
+step          = actor, ".", Verb, "(", step_args, ")",
+                  "until", condition,
+                  "max_duration", qty,
+                  "on_fail", error_handle, ";" ;                              (* [R] *)
+step_args     = [ target [ "," arg_list ] ] ;
+target        = resource_id | qty | type_name ;
+arg_list      = arg, { ",", arg } ;
+arg           = identifier, ":", arg_value ;
+arg_value     = qty | slope_tag | resource_id | type_name | style_tag ;
+slope_tag     = "GENTLE" | "STEADY" | "AGGRESSIVE" | qty ;
+error_handle  = "ABORT" | "RECOVER" | "WARM" ;
+
+(* ===== Conditions ===== *)
+condition     = tropical_threshold | echo_witness ;                           (* [A] *)
+tropical_threshold = "~", metric, comparison, value ;                         (* [A] *)
+echo_witness  = echo_id, comparison, value ;                                  (* [R] *)
+comparison    = ">=" | "<=" | ">" | "<" | "==" | "!=" ;
+value         = qty | boolean | type_name | number ;
+boolean       = "true" | "false" ;
+
+(* ===== Lexical (O3 closed) ===== *)
+dimension     = "Temperature" | "Time" | "Mass" | "Torque" | "AngularRate"
+              | "Length" | "Viscosity" | "Power" | "Dimensionless"
+              | dimension, ( "·" | "*" ), dimension
+              | dimension, "/", dimension ;
+qty           = number, unit ;
+unit          = base_unit | compound_unit ;
+compound_unit = base_unit, ( "·" | "*" ), base_unit | base_unit, "/", base_unit ;
+base_unit     = "C" | "K" | "s" | "min" | "h" | "g" | "kg" | "mg" | "Nm"
+              | "rpm" | "mm" | "cm" | "m" | "Pa·s" | "Pas" | "W" | "kW" | "%" | "" ;
+number        = decimal ;  decimal = ?-?[0-9]+(\.[0-9]+)? ;  integer = ?-?[0-9]+? ;
+identifier    = ?[A-Za-z_][A-Za-z0-9_]*? ;
+type_name     = ?[A-Z][A-Za-z0-9_]*? ;   Verb = type_name ;
+metric        = identifier ;  actor = identifier ;  actor_id = identifier ;
+resource_id   = identifier ;  ceremony_id = identifier ;  setting_key = identifier ;
+echo_id       = "@", identifier ;
+string_lit    = ?"([^"\\]|\\.)*"? ;
+----
+
+== 9. Relationship to the typed AST (constitution §4)
+
+Every production above has a direct image in `src/compiler/ast.ml`
+(constitution §4):
+
+[cols="1,2", options="header"]
+|===
+| Grammar production | AST node
+| `qty` | `type qty = { mag : float; dim : dim }`
+| `dimension` | `type dim = Temperature \| … \| Mul of dim*dim \| Div of dim*dim`
+| `limit` / `limit_kind` | `type limit = { name; kind : Soft\|Hard; value : qty }`
+| `thermal_block`/`mechanical_block`/`chemical_block` | `type envelope = { thermal; mechanical; chemical : limit list }`
+| `material_decl` / `tool_decl` | `type material = { mname; phase; env; tool_of : string option }`
+| `capability_block` | `type capability = { verb; quantity : dim; lo; hi : qty; slope; reach : (qty*qty) option }`
+| `appliance_decl` | `type appliance = { aname; caps : capability list }`
+| `step` | `type step = { actor; verb; target; args : (string*arg) list; cond; max_dur : qty; on_fail : fail }`
+| `sync_block`/`bind_step`/`recipe`/`program` | the remaining AST sum nodes (constitution §4 "…")
+|===
+
+The `tool_of` field is how `tool_decl` reuses the `material` AST node
+(constitution §2.3, "Modelled as a material with a `material:` tag"): a tool
+parses through `tool_decl` and lowers to a `material` record with `tool_of =
+Some "SILICONE"`. This is why `tool_decl`'s envelope grammar reuses
+`envelope_block` verbatim — same physics, same checker premise
+(`req ≺ danger(m)`), one diagnostic family (`MELT_TOOL`, `CHAR_TOOL`).
+
+== 10. Summary of open-item closures
+
+[cols="1,4", options="header"]
+|===
+| Open item | Status in v2.0
+| *O1* — nested `sync_block`/`bind_step` inside a `sync` body | *CLOSED.*
+  `sync_item = step \| sync_block \| bind_step` (§4.3). Semantics: lexically
+  nested sub-sessions over an actor subset; per-level barrier, witness, and
+  linearity discipline; no new deadlock cycles because nesting is a tree.
+| *O2* — `resource_decl`, `chef_decl`, `echo_decl` undefined | *CLOSED.*
+  Concrete productions in §3.4, matching `examples/poached-egg.ks` and
+  constitution §2.5. `chef_decl` admits both v1.0 `style` and v2.0 `controls`.
+| *O3* — lexical placeholders undefined | *CLOSED.* Full lexer in §2: dimensioned
+  `qty` literals, `identifier`/`type_name`/`Verb`/`echo_id` classes, keyword
+  set, maximal-munch unit rule.
+| NEW v2.0 declarations | `material_decl`, `tool_decl`, `appliance_decl`
+  (capability blocks), `use_decl`, `import_decl` (§3.1–§3.3, §3.6).
+| `orchestrate` → `recipe` | `recipe_kw = "recipe" \| "orchestrate"`:
+  rename with deprecated synonym, so v1.0 files parse unchanged.
+| extended `step` | positional `target` + named envelope `arg`s (§4.1),
+  refining the constitution §3 sketch.
+|===

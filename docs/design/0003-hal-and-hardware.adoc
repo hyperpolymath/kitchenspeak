@@ -1,0 +1,215 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+= KitchenSpeak v2.0 — Hardware Abstraction Layer & The Path to Future Hardware
+:toc:
+:toclevels: 3
+:icons: font
+
+[NOTE]
+====
+Elaborates `docs/design/0001-v2-constitution.adoc` §6 (HAL projection & the
+trust boundary). The reference projection is implemented in
+`src/compiler/hal.ml`; the JSON shown here is what `ksc lower` actually emits, so
+this document and the compiler do not drift. Authored to match the prototype.
+====
+
+== 1. Why a capability HAL at all
+
+The mission requirement (SPEC §5) is *target agnosticism*: one recipe must run on
+a Miele oven, a Samsung fridge, and a robot arm alike. The v1.0 spec named three
+vendor clouds (HomeConnect, SmartThings, Tuya). v2.0 inverts the dependency: a
+recipe never names a wire protocol. It names *capabilities* (`Heat`, `Whisk`,
+`Move`, `Plate`) with *envelopes*, and the HAL projects the well-typed program to
+whatever protocol the present hardware speaks — *now* Matter, MQTT, and ROS 2;
+*later* anything that can publish a capability descriptor (§5).
+
+Lowering is invoked *only after the checker is clean*. That is the whole game:
+the type that proved the recipe safe is the type that decides which devices it may
+run on (§4, the trust boundary).
+
+== 2. The abstract capability trace (the IR)
+
+A well-typed program lowers first to a backend-neutral *trace*: an ordered list of
+capability invocations. This is the join point every backend projects from.
+
+[source,json]
+----
+{
+  "recipe": "PoachedEgg",
+  "ceremony": "Breakfast",
+  "target": "abstract",
+  "steps": [
+    {
+      "actor": "Hob",
+      "appliance": "Hob",
+      "verb": "Heat",
+      "envelope": { "quantity": "Temperature", "value": 82, "unit": "82C" },
+      "until": "~ temp -> 80C",
+      "max_duration_s": 480,
+      "on_fail": "ABORT",
+      "witness": null
+    }
+  ]
+}
+----
+
+.Trace record schema (one per executed step)
+[cols="1,1,3", options="header"]
+|===
+| Field | Type | Meaning
+| `actor`          | string        | The chef or appliance named in the source step.
+| `appliance`      | string        | The appliance the actor resolves to (a chef projects to the appliance it controls).
+| `verb`           | string        | The capability invoked.
+| `envelope`       | object\|null  | The primary controlled quantity: `{quantity, value (base unit), unit}`. `null` when the step requests no primary quantity (e.g. a witness-only `Poach`).
+| `reach`          | number?       | Present for spatial capabilities (robot arm), in cm.
+| `until`          | string        | The postcondition (a `~` tropical threshold or an `@` echo witness).
+| `max_duration_s` | number        | The wall-clock budget in seconds (the termination witness).
+| `on_fail`        | string        | `ABORT` \| `RECOVER` \| `WARM`.
+| `witness`        | string\|null  | The `@echo` that releases the barrier, or `null`.
+|===
+
+All magnitudes are normalised to base units (Celsius, seconds, grams, Nm, rpm,
+cm) by `units.ml`, so the trace is unambiguous regardless of the source unit.
+
+== 3. Backend projections
+
+`ksc lower --target <T>` appends a backend-specific object to each step. The maps
+below are exactly those in `src/compiler/hal.ml`.
+
+=== 3.1 Matter (local fabric, no cloud)
+
+A capability maps to a Matter cluster + attribute write on the local fabric — no
+cloud round-trip, honouring *Zero Scams*.
+
+[cols="1,1,1", options="header"]
+|===
+| Verb | Cluster | Attribute
+| `Heat` / `Bake` / `Sear` | `Thermostat` | `OccupiedHeatingSetpoint`
+| `Poach` | `TemperatureControl` | `TemperatureSetpoint`
+| `Cool` | `Thermostat` | `OccupiedCoolingSetpoint`
+| `Whisk` | `FanControl` | `PercentSetting`
+| _(other)_ | `Custom` | `Setpoint`
+|===
+
+[source,json]
+----
+"matter": { "cluster": "Thermostat", "attribute": "OccupiedHeatingSetpoint", "value": 82 }
+----
+
+=== 3.2 MQTT (local broker)
+
+A capability maps to a topic + JSON payload on a *local* broker:
+
+[source,json]
+----
+"mqtt": { "topic": "kitchenspeak/Hob/Heat",
+          "payload": { "quantity": "Temperature", "value": 82, "unit": "82C" } }
+----
+
+=== 3.3 ROS 2 (consumer robotics)
+
+A robotics capability maps to an action goal on a `control_msgs` action server;
+the envelope's `reach`/torque become action constraints.
+
+[cols="1,2", options="header"]
+|===
+| Verb | Action type
+| `Move` / `Plate` | `control_msgs/action/FollowJointTrajectory`
+| `Whisk` | `control_msgs/action/GripperCommand`
+| _(other)_ | `control_msgs/action/JointGroupCommand`
+|===
+
+[source,json]
+----
+"ros2": { "server": "/arm/plate", "action": "control_msgs/action/FollowJointTrajectory" }
+----
+
+== 4. The trust boundary (the load-bearing idea)
+
+The compile-time safety proof holds *given* two classes of postulate (constitution
+§6, COMMENTARY §Echo): the *echo oracles* (sensors are sound) and the *controller
+contracts* (a GENTLE slope keeps to its envelope). Lowering is where those
+postulates must be *discharged by real hardware*:
+
+. *Echo postulates → local sensors.* Every `proving @e` and every `until @e`
+  obliges the target device to supply a *local* sensor of the echo's modality. If
+  the device cannot, the program does not lower to it. (Zero Scams forbids
+  discharging a safety witness over the cloud.)
+. *Controller contracts → certified envelopes.* A step's requested envelope was
+  checked against the appliance type's capability envelope. At lowering, the
+  *physical* device must carry a certificate that its envelope is at least as
+  tight. A device whose certified envelope is wider (it can overshoot) fails to
+  bind that capability.
+
+Operationally the boundary is visible in the tool: `ksc lower` runs the checker
+first and *refuses* to emit a trace for an unsafe recipe —
+
+[source]
+----
+$ ksc lower --target matter examples/v2/negative/curdle-milk.ks
+curdle-milk.ks:7: error [CURDLE] would expose material 'm' to 95C; hard curdle limit is 82C
+refusing to lower curdle-milk.ks: 1 safety error(s) — the trust boundary holds.
+----
+
+The type that made the recipe safe is the type that gates deployment.
+
+== 5. Device certification — how *future* hardware plugs in
+
+A new or future appliance joins the ecosystem by publishing a *device descriptor*:
+the very same shape as an `appliance` declaration. The descriptor *is* the
+appliance type. Once registered, every existing recipe type-checks against it with
+no source change — the "make use of future hardware" story.
+
+[source]
+----
+// A future induction hob registers itself by descriptor:
+appliance InductionHob {
+  capability Heat {
+    quantity: Temperature;
+    range: 0C .. 240C;          // its certified envelope (note: tighter than 250C)
+    slope: 0C/s .. 12C/s;       // faster than a gas hob — still bounded
+  }
+  capability Sear { quantity: Temperature; range: 0C .. 240C; slope: 0C/s .. 20C/s; }
+}
+----
+
+Because envelopes are *subtyped by inclusion* (constitution §5), a recipe written
+against the abstract `Hob` lowers to `InductionHob` iff every step it uses stays
+inside `InductionHob`'s narrower envelope — checked, not hoped. A device that
+*widens* a hazard envelope (e.g. a hob that can reach 400C) simply causes recipes
+that relied on the 250C ceiling to be re-checked; ones that stay safe still lower.
+
+== 6. Consumer robotics specifics
+
+A robot arm is just an appliance whose capabilities carry *spatial* and
+*mechanical* envelopes in addition to the controlled quantity:
+
+[source]
+----
+appliance Arm {
+  capability Move  { quantity: Torque; range: 0Nm .. 8Nm; reach: 0cm .. 85cm; }
+  capability Plate { quantity: Torque; range: 0Nm .. 5Nm; reach: 0cm .. 85cm; }
+}
+----
+
+The checker enforces three robotics-specific safeties (see `check.ml`):
+
+* *Over-torque* — a `torque:` above the capability range ⇒ `OVER_TORQUE`.
+* *Over-reach* — a `reach:` beyond the arm's reach envelope ⇒ `OVER_REACH`.
+* *Material handling force* — a delicate target may carry a `mechanical { … }`
+  hard limit (max handling force); a `Plate`/`Move` exceeding it is rejected by
+  the same material-safety rule that rejects thermal ruin.
+
+A future revision adds *human-safety zones* as a chemical/spatial envelope on the
+workspace: a `Move` whose trajectory would enter a declared keep-out zone is a
+compile error, not a run-time emergency stop. The envelope machinery already
+present (intersection of device + target safety) is the natural home for it.
+
+== 7. Summary
+
+* Recipes name capabilities, never wire protocols.
+* A well-typed program lowers to a backend-neutral capability trace.
+* Matter / MQTT / ROS 2 are projections of that trace; new backends are additive.
+* The proven/postulated boundary becomes a deploy-time gate: unsafe recipes do
+  not lower, and devices that cannot honour an envelope do not bind.
+* Future hardware joins by descriptor; existing recipes re-check automatically.

@@ -1,0 +1,906 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+= KitchenSpeak v2.0 — The Normative Type System
+:toc:
+:toclevels: 3
+:icons: font
+:stem: latexmath
+
+[NOTE]
+====
+This document is the *normative type system* for KitchenSpeak v2.0. It
+elaborates the binding `docs/design/0001-v2-constitution.adoc`, in particular
+the keystone physical-safety judgment (constitution §5), into a complete set
+of inference rules. It adds detail; it does not contradict the constitution.
+
+Where the constitution states a property in prose (e.g. "a step is safe only
+inside the intersection of the device and material envelopes"), this document
+gives the rule, the side conditions, the well-formedness obligations, and the
+exact diagnostic the reference checker (`src/compiler/check.ml`) emits when the
+rule fails.
+
+The judgments here are what `proofs/agda/NoCurdle.agda` and its siblings
+mechanise. The Agda files are the proof that *this* type system is sound; this
+document is the type system they prove sound.
+====
+
+== 0. Notation and reading guide
+
+Inference rules are written in the usual natural-deduction style: premises
+above the line, conclusion below. A double line denotes a definitional
+equivalence (an algorithmic rule the checker computes rather than searches).
+
+[stem]
+++++
+\frac{\text{premise}_1 \quad \cdots \quad \text{premise}_n}{\text{conclusion}}\ \textsc{(Rule-Name)}
+++++
+
+The metavariables are fixed throughout:
+
+[cols="1,4", options="header"]
+|===
+| Symbol | Meaning
+| stem:[\Gamma] | the *unrestricted* zone of the context (materials, appliances, chefs, echoes, ceremony). Reusable; weakening and contraction allowed.
+| stem:[\Delta] | the *linear* zone of the context (resources). Substructural; carries QTT grades.
+| stem:[\Gamma \mid \Delta] | the *split context*: an unrestricted zone paired with a linear zone.
+| stem:[q] | a QTT grade, stem:[q \in \{0, 1, \omega\}].
+| stem:[d] | a dimension (Temperature, Time, Mass, Torque, AngularRate, Length, Viscosity, Power, Dimensionless, products and quotients).
+| stem:[\kappa] | a quantity, stem:[\kappa = (m, d)] with rational magnitude stem:[m] in base units and dimension stem:[d].
+| stem:[\mathcal{E}] | an *envelope*: a dimension-indexed family of intervals (see §3).
+| stem:[\mathcal{M}] | a material with safety envelope stem:[\mathcal{E}_\mathcal{M}] and danger set stem:[\mathsf{danger}(\mathcal{M})].
+| stem:[\mathcal{A}] | an appliance with capability set stem:[\mathsf{caps}(\mathcal{A})].
+| stem:[\sigma] | a chef style modifier (an envelope-shrinking map).
+| stem:[\vdash] | "is well-typed at"; subscripted by judgment kind where helpful.
+|===
+
+The seven elevated types of the constitution map to typing rules as follows,
+each developed in its own subsection of §6:
+
+[cols="1,1,3", options="header"]
+|===
+| Type | Constructor | Rule family
+| Primitive    | dimensioned literal | `T-Lit`, `T-QMul`, `T-QAdd`, `T-Cmp` (§2)
+| Tropical     | `~ v slope s`       | `T-Tropical` (§6.1)
+| Linear       | `use … as r`        | `T-Use`, `T-Consume`, split/merge (§1, §6.2)
+| Dyadic       | `(x,y) <~> A`       | `T-Bind` (§6.3)
+| Choreographic| `sync(A…) { … }`    | `T-Sync`, `T-Project` (§6.4)
+| Echo         | `proving @e`        | `T-Echo`, `T-Proving` (§6.5)
+| Ceremonial   | `under C`           | `T-Ceremony` (§6.6)
+|===
+
+== 1. Judgment forms and the split context
+
+=== 1.1 The split context
+
+A KitchenSpeak context is split into two zones with different structural
+rules, exactly as in Quantitative Type Theory (QTT) and dual-zone linear
+calculi (Barber's DILL):
+
+[stem]
+++++
+\Gamma ::= \cdot \mid \Gamma, x : \tau \qquad\qquad
+\Delta ::= \cdot \mid \Delta, r :_{q} \mathcal{M}\langle s \rangle
+++++
+
+* The *unrestricted zone* stem:[\Gamma] holds non-consumable facts:
+  declared materials, appliances (with their capability envelopes), chefs
+  (with their style modifiers), echoes (with their modality), and the
+  ambient ceremony. Entries are facts about the world; they may be used
+  zero, one, or many times. Both weakening (`U-Weak`) and contraction
+  (`U-Contr`) hold for stem:[\Gamma].
+
+* The *linear zone* stem:[\Delta] holds *resources*: linear instances of
+  materials brought into the mission. An entry stem:[r :_q \mathcal{M}\langle s\rangle]
+  reads "resource `r` is an instance of material stem:[\mathcal{M}] in
+  phase typestate stem:[s], with usage grade stem:[q]". Neither weakening
+  nor contraction holds for stem:[\Delta] in general; usage is governed by
+  the grades.
+
+The grades stem:[q \in \{0,1,\omega\}] form the standard zero-one-many
+semiring stem:[(0,1,\omega; +, \cdot)] with stem:[1+1=\omega],
+stem:[\omega+\omega=\omega], stem:[1\cdot\omega=\omega], stem:[0\cdot q=0]:
+
+* stem:[q=0] — the resource is *erased*: mentioned in types/proofs but not
+  consumed at run time (e.g. a resource carried only for provenance).
+* stem:[q=1] — the resource must be consumed *exactly once*. This is the
+  default for `use M as r;`.
+* stem:[q=\omega] — unrestricted use. **Reserved**: in KitchenSpeak v2.0 no
+  surface construct introduces an stem:[\omega]-graded resource (you cannot
+  duplicate an egg). The grade exists so the metatheory is the standard QTT,
+  and so the unrestricted zone stem:[\Gamma] can be understood as the
+  stem:[\omega]-graded fragment.
+
+=== 1.2 The four judgment forms
+
+[stem]
+++++
+\begin{array}{ll}
+\Gamma \vdash d : \mathsf{Dim}
+  & \text{(dimension well-formedness)}\\[2pt]
+\Gamma \mid \Delta \vdash e : \mathsf{Quantity}[d]
+  & \text{(quantity typing)}\\[2pt]
+\Gamma \mid \Delta \vdash \mathit{step} : \mathsf{Safe} \dashv \Delta'
+  & \text{(physically-safe step; residual linear zone } \Delta')\\[2pt]
+\Gamma \mid \Delta \vdash \mathit{recipe} : \mathsf{Total}
+  & \text{(whole mission is total and leak-free)}
+\end{array}
+++++
+
+The step judgment is in *output-zone* (consumption) form: it threads the
+linear zone, returning the residual stem:[\Delta'] after the step has
+consumed what it consumes. This is how leak and double-use are detected
+(§5). The recipe judgment requires the residual zone at mission end to be
+*grade-saturated* — every grade-1 resource consumed (§6.7).
+
+=== 1.3 Structural rules
+
+The two zones differ exactly in their structural rules.
+
+[stem]
+++++
+\frac{\Gamma \mid \Delta \vdash e : \mathsf{Quantity}[d]}
+     {\Gamma, x:\tau \mid \Delta \vdash e : \mathsf{Quantity}[d]}\ \textsc{(U-Weak)}
+\qquad
+\frac{\Gamma, x:\tau, y:\tau \mid \Delta \vdash J}
+     {\Gamma, x:\tau \mid \Delta \vdash J[y{:=}x]}\ \textsc{(U-Contr)}
+++++
+
+[stem]
+++++
+\frac{\Gamma \mid \Delta \vdash J}
+     {\Gamma \mid \Delta, r:_{0}\mathcal{M}\langle s\rangle \vdash J}\ \textsc{(L-Weak}_0\textsc{)}
+\qquad
+\textit{(no contraction on } \Delta;\ \text{no weakening for } q\neq 0)
+++++
+
+`L-Weak`~0~ says only a *grade-0* (erased) resource may be introduced
+without being used; this is what makes "an unused grade-1 resource" a leak
+rather than a silently-discarded value. There is no contraction rule for
+stem:[\Delta]: a resource cannot be split into two usable copies.
+
+=== 1.4 Context split and merge
+
+When a construct has two sub-derivations that each consume resources (the two
+factors of a dyadic bind; two actors in a sync), the linear zone is *split*
+between them by the grade-addition relation stem:[\Delta = \Delta_1 + \Delta_2]:
+
+[stem]
+++++
+\frac{}{\cdot = \cdot + \cdot}
+\qquad
+\frac{\Delta = \Delta_1 + \Delta_2 \quad q = q_1 + q_2}
+     {\Delta, r:_{q}\mathcal{M}\langle s\rangle \;=\; (\Delta_1, r:_{q_1}\mathcal{M}\langle s\rangle) + (\Delta_2, r:_{q_2}\mathcal{M}\langle s\rangle)}
+++++
+
+Splitting a grade-1 resource (stem:[1 = q_1 + q_2]) forces stem:[\{q_1,q_2\}=\{0,1\}]:
+exactly one side may actually consume it; the other holds it erased. This is
+the rule that makes `DOUBLE_USE` impossible (§5): you cannot derive
+stem:[1 = 1 + 1] because stem:[1+1=\omega \neq 1].
+
+The unrestricted zone is *shared*, not split: both sub-derivations see all of
+stem:[\Gamma]. Merging residuals after sequencing is ordinary append, since a
+consumed grade-1 resource has been demoted to grade 0 in the residual.
+
+== 2. Dimensions and quantities (Primitive)
+
+=== 2.1 Dimension well-formedness
+
+The base dimensions and their closure under product and quotient form a free
+abelian group on the SI base set used by the kitchen. A dimension is a vector
+of integer exponents over the generators
+stem:[\{\Theta\,(\text{Temp}), \mathrm{T}\,(\text{Time}), \mathrm{M}\,(\text{Mass}), \mathrm{N}{\cdot}\mathrm{m}\,(\text{Torque}), \mathrm{L}\,(\text{Length})\}],
+with the derived dimensions defined by:
+
+[stem]
+++++
+\text{AngularRate} = \mathrm{T}^{-1},\quad
+\text{Power} = \mathrm{N{\cdot}m}\cdot\mathrm{T}^{-1},\quad
+\text{Viscosity} = \mathrm{M}\cdot\mathrm{L}^{-1}\cdot\mathrm{T}^{-1},\quad
+\text{Dimensionless} = \mathbf{0}.
+++++
+
+[stem]
+++++
+\frac{}{\Gamma \vdash \mathsf{Dimensionless} : \mathsf{Dim}}\ \textsc{(D-Unit)}
+\qquad
+\frac{d_1 \text{ base or derived} }{\Gamma \vdash d_1 : \mathsf{Dim}}\ \textsc{(D-Base)}
+++++
+
+[stem]
+++++
+\frac{\Gamma \vdash d_1 : \mathsf{Dim} \quad \Gamma \vdash d_2 : \mathsf{Dim}}
+     {\Gamma \vdash d_1 \cdot d_2 : \mathsf{Dim}}\ \textsc{(D-Mul)}
+\qquad
+\frac{\Gamma \vdash d_1 : \mathsf{Dim} \quad \Gamma \vdash d_2 : \mathsf{Dim}}
+     {\Gamma \vdash d_1 / d_2 : \mathsf{Dim}}\ \textsc{(D-Div)}
+++++
+
+Dimensions are compared *up to the abelian-group equations*
+(stem:[d_1\cdot d_2 = d_2\cdot d_1], stem:[d/d=\mathbf 0], etc.): the checker
+normalises both sides to an exponent vector before comparison. Thus
+stem:[\mathrm{N{\cdot}m}\cdot\mathrm{T}^{-1}] and stem:[\text{Power}] are
+*the same dimension*, not merely convertible.
+
+=== 2.2 Dimensioned literals
+
+A literal carries a unit suffix that fixes both its magnitude (after
+normalisation to the base unit) and its dimension. Let stem:[\mathsf{base}(u)]
+be the base-unit conversion of unit suffix stem:[u] and stem:[\mathsf{dim}(u)]
+its dimension.
+
+[stem]
+++++
+\frac{m \in \mathbb{Q} \quad u \text{ a unit suffix} \quad \Gamma \vdash \mathsf{dim}(u) : \mathsf{Dim}}
+     {\Gamma \mid \cdot \vdash (m\,u) : \mathsf{Quantity}[\mathsf{dim}(u)]}\ \textsc{(T-Lit)}
+++++
+
+Worked instances (the canonical ones from the constitution):
+
+[cols="2,1,3", options="header"]
+|===
+| Literal | Base form | Conclusion
+| `82C`     | stem:[(82,\Theta)]           | stem:[\vdash \mathtt{82C} : \mathsf{Quantity}[\text{Temperature}]]
+| `5min`    | stem:[(300,\mathrm{T})]      | stem:[\vdash \mathtt{5min} : \mathsf{Quantity}[\text{Time}]] (5 min = 300 s)
+| `300g`    | stem:[(0.3,\mathrm{M})]      | stem:[\vdash \mathtt{300g} : \mathsf{Quantity}[\text{Mass}]] (300 g = 0.3 kg)
+| `8Nm`     | stem:[(8,\mathrm{N{\cdot}m})]| stem:[\vdash \mathtt{8Nm} : \mathsf{Quantity}[\text{Torque}]]
+| `80rpm`   | stem:[(\tfrac{80}{60},\mathrm{T}^{-1})] | stem:[\vdash \mathtt{80rpm} : \mathsf{Quantity}[\text{AngularRate}]]
+| `4cm`     | stem:[(0.04,\mathrm{L})]     | stem:[\vdash \mathtt{4cm} : \mathsf{Quantity}[\text{Length}]]
+| `0.8Pa·s` | stem:[(0.8,\mathrm{M L^{-1} T^{-1}})] | stem:[\vdash \mathtt{0.8Pa·s} : \mathsf{Quantity}[\text{Viscosity}]]
+| `2C/s`    | stem:[(2,\Theta\,\mathrm{T}^{-1})] | stem:[\vdash \mathtt{2C/s} : \mathsf{Quantity}[\text{Temperature}/\text{Time}]]
+|===
+
+So `82C : Quantity[Temperature]` because the suffix `C` has
+stem:[\mathsf{dim}(\mathtt{C}) = \Theta = \text{Temperature}]; the magnitude
+82 is irrelevant to the type, only to the later interval checks of §3–§5.
+A literal carries the empty linear zone (literals consume no resources).
+
+=== 2.3 Dimension-preserving arithmetic
+
+Multiplication adds dimension exponents; division subtracts; addition and
+comparison require equal dimensions.
+
+[stem]
+++++
+\frac{\Gamma\mid\Delta_1 \vdash e_1 : \mathsf{Quantity}[d_1] \quad \Gamma\mid\Delta_2 \vdash e_2 : \mathsf{Quantity}[d_2]}
+     {\Gamma\mid\Delta_1+\Delta_2 \vdash e_1 \times e_2 : \mathsf{Quantity}[d_1\cdot d_2]}\ \textsc{(T-QMul)}
+++++
+
+[stem]
+++++
+\frac{\Gamma\mid\Delta_1 \vdash e_1 : \mathsf{Quantity}[d_1] \quad \Gamma\mid\Delta_2 \vdash e_2 : \mathsf{Quantity}[d_2]}
+     {\Gamma\mid\Delta_1+\Delta_2 \vdash e_1 / e_2 : \mathsf{Quantity}[d_1 / d_2]}\ \textsc{(T-QDiv)}
+++++
+
+[stem]
+++++
+\frac{\Gamma\mid\Delta_1 \vdash e_1 : \mathsf{Quantity}[d] \quad \Gamma\mid\Delta_2 \vdash e_2 : \mathsf{Quantity}[d]}
+     {\Gamma\mid\Delta_1+\Delta_2 \vdash e_1 + e_2 : \mathsf{Quantity}[d]}\ \textsc{(T-QAdd)}
+++++
+
+[stem]
+++++
+\frac{\Gamma\mid\Delta_1 \vdash e_1 : \mathsf{Quantity}[d] \quad \Gamma\mid\Delta_2 \vdash e_2 : \mathsf{Quantity}[d] \quad {\bowtie}\in\{<,\le,=,\ge,>\}}
+     {\Gamma\mid\Delta_1+\Delta_2 \vdash (e_1 \bowtie e_2) : \mathsf{Bool}}\ \textsc{(T-Cmp)}
+++++
+
+The premise stem:[d_1 = d_2] in `T-QAdd`/`T-Cmp` is where the
+constitution's "comparing `82C` with `5min` is a type error" becomes a
+*missing derivation*: there is no rule deriving stem:[\mathtt{82C} \ge \mathtt{5min}]
+because stem:[\Theta \neq \mathrm{T}]. The checker emits *`DIM_MISMATCH`*:
+
+[example]
+====
+`82C >= 5min` ⇒ `DIM_MISMATCH: cannot compare Temperature with Time`
+(no instance of `T-Cmp`; the two operands fail the stem:[d_1=d_2] premise).
+====
+
+*Dimension-preservation lemma.* If
+stem:[\Gamma\mid\Delta \vdash e : \mathsf{Quantity}[d]] then every
+subexpression is well-dimensioned and stem:[d] is uniquely determined by the
+syntax of stem:[e] (the rules are syntax-directed on the operator). Proof: by
+induction; each operator has exactly one applicable rule.
+
+== 3. Envelopes, materials and appliances
+
+=== 3.1 Envelopes and the two subset orders
+
+An *envelope* stem:[\mathcal{E}] is a finite map from dimensions to closed
+rational intervals (plus, optionally, derived-quantity intervals for *slope*
+and *reach*):
+
+[stem]
+++++
+\mathcal{E} : d \rightharpoonup [\,\ell_d,\ h_d\,], \qquad \ell_d, h_d \in \mathbb{Q}\cup\{-\infty,+\infty\}.
+++++
+
+A *requested envelope* stem:[\mathsf{req}] is the (finite) envelope assembled
+from a step's arguments: each dimensioned argument contributes a point or
+interval at its dimension (a setpoint `target: 82C` contributes the point
+interval stem:[[82,82]] at Temperature; `slope: 5C/s` contributes
+stem:[[\,\cdot,5]] at Temperature/Time; `reach: 4cm` a point at Length).
+
+We need two distinct order relations on envelopes — *containment* for device
+capability, and *strict-domination* for material safety — and they are not the
+same relation:
+
+[stem]
+++++
+\boxed{\ \mathsf{req} \subseteq \mathcal{E}\ } \iff
+\forall d \in \mathrm{dom}(\mathsf{req}).\ d\in\mathrm{dom}(\mathcal E) \ \wedge\
+\ell^{\mathcal E}_d \le \ell^{\mathsf{req}}_d \ \wedge\ h^{\mathsf{req}}_d \le h^{\mathcal E}_d
+++++
+
+[stem]
+++++
+\boxed{\ \mathsf{req} \prec D\ } \iff
+\forall (d, L) \in D.\ h^{\mathsf{req}}_d \;<\; L
+\qquad\text{(strict, against each hard limit } L \text{ at dimension } d)
+++++
+
+* *Envelope-subset* stem:[\mathsf{req}\subseteq\mathcal{E}] ("the request fits
+  inside the device") is *non-strict, closed-interval containment*: a device
+  rated to exactly `250C` may be asked for exactly `250C`. Every requested
+  dimension must be *present* in stem:[\mathcal E] (a device with no Torque
+  capability cannot be asked for torque) — that absence is `NO_CAPABILITY`,
+  §4.
+* *Strict-domination* stem:[\mathsf{req}\prec D] ("the request stays clear of
+  every danger limit") is *strict, open* below each hard limit in the danger
+  set stem:[D]: reaching a hard limit is already ruin, so `<`, never
+  `\le`. A request that omits a dimension present in stem:[D] vacuously
+  dominates at that dimension (it does not push that quantity at all).
+
+This asymmetry is deliberate and load-bearing: *you may use a device to its
+rated edge, but you may never push a material to its ruin edge.*
+
+=== 3.2 The soft/hard (danger) distinction
+
+Each named limit in a material's envelope is classified stem:[\mathsf{Soft}]
+or stem:[\mathsf{Hard}]. The *danger set* of a material is the projection onto
+its hard limits:
+
+[stem]
+++++
+\mathsf{danger}(\mathcal{M}) \;=\; \{\,(d, v) \mid (\mathit{name}, \mathsf{Hard}, (v,d)) \in \mathcal{E}_\mathcal{M}\,\}.
+++++
+
+[cols="1,2,3", options="header"]
+|===
+| Class | Semantics | Checker action
+| `soft`  | quality threshold (`scald: 70C`) | *warning* if stem:[\mathsf{req}] crosses it but stays below the next hard limit; never blocks compilation.
+| `hard`  | ruin/hazard threshold (`curdle: 82C`) | *error* (the named diagnostic) if stem:[\mathsf{req} \not\prec] this limit. Always blocks.
+|===
+
+For Milk `{ scald: 70C (soft), curdle: 82C (hard), freeze: 0C (hard) }`:
+stem:[\mathsf{danger}(\text{Milk}) = \{(\Theta,82),(\Theta,0)\}], read as
+"the safe open band at Temperature is stem:[(0,82)]". A request of `71C`
+warns (past `scald`); a request of `82C` is rejected (`CURDLE`); a request of
+`60C` is clean.
+
+=== 3.3 Materials and tools enter the unrestricted zone
+
+A `material`/`tool` declaration is a *fact about a substance*, so it enters
+stem:[\Gamma] (it is not consumed). It records the phase typestate and the
+envelope. A tool is a material with a `material:` tag and, by convention, only
+thermal/mechanical limits.
+
+[stem]
+++++
+\frac{\mathcal{M} = (\mathit{name}, \mathit{phase}, \mathcal{E}_\mathcal{M}) \quad \text{envelope well-formed (§7)}}
+     {\Gamma \vdash \mathtt{material}\ \mathit{name}\ \{\dots\} \;\rightsquigarrow\; \Gamma, \mathit{name} : \mathsf{Material}[\mathcal{E}_\mathcal{M}]}\ \textsc{(T-MatDecl)}
+++++
+
+A `use M as r;` *instantiates* a material as a linear resource, moving an
+entry into the linear zone at grade 1 in the material's declared phase:
+
+[stem]
+++++
+\frac{\Gamma \vdash M : \mathsf{Material}[\mathcal{E}] \quad \mathsf{phase}_0(M)=s}
+     {\Gamma \mid \Delta \;\vdash\; \mathtt{use}\ M\ \mathtt{as}\ r;\ \dashv\ \Delta, r:_{1}\,M\langle s\rangle}\ \textsc{(T-Use)}
+++++
+
+=== 3.4 Appliances and chefs enter the unrestricted zone
+
+An appliance declaration enters stem:[\Gamma] carrying its capability set.
+Each capability is a verb plus a device envelope:
+
+[stem]
+++++
+\mathsf{caps}(\mathcal{A}) = \{\, V \mapsto \mathcal{E}^{\mathcal A}_V \,\}, \qquad
+\mathcal{E}^{\mathcal A}_V \text{ from } \mathtt{range}/\mathtt{slope}/\mathtt{reach}.
+++++
+
+[stem]
+++++
+\frac{\text{each capability envelope well-formed (§7)}}
+     {\Gamma \vdash \mathtt{appliance}\ \mathit{name}\ \{\dots\} \;\rightsquigarrow\; \Gamma, \mathit{name} : \mathsf{Appliance}[\mathsf{caps}]}\ \textsc{(T-ApplDecl)}
+++++
+
+A `chef C controls A style σ;` binds an actor name `C` to an appliance and a
+*style modifier* stem:[\sigma]. The style is an envelope endomorphism that may
+only *shrink*:
+
+[stem]
+++++
+\frac{\Gamma \vdash A : \mathsf{Appliance}[\mathsf{caps}] \quad \forall V.\ \sigma(\mathcal{E}^{A}_V) \subseteq \mathcal{E}^{A}_V}
+     {\Gamma \vdash \mathtt{chef}\ C\ \mathtt{controls}\ A\ \mathtt{style}\ \sigma; \;\rightsquigarrow\; \Gamma, C : \mathsf{Actor}[A, \sigma]}\ \textsc{(T-Chef)}
+++++
+
+The side condition stem:[\sigma(\mathcal E)\subseteq\mathcal E]
+(*style-monotonicity*) is what makes the constitution's "style can only shrink
+envelopes, never widen them" a *checked* property: a `chef` declaration whose
+style would widen any range is rejected (`STYLE_WIDENS`, §5, well-formedness).
+For `Delia style PRECISION`, stem:[\sigma_{\text{PRECISION}}] tightens the
+slope interval (low jitter) and leaves the range endpoints in place, so
+stem:[\sigma(\mathcal E)\subseteq\mathcal E] holds.
+
+== 4. The physical-safety judgment (keystone, constitution §5)
+
+This is the heart of the language. We give the constitution's stem:[\mathsf{Safe}]
+rule in full, with all three premises made precise and the linear-zone
+threading attached.
+
+Let a step be stem:[\mathit{st} = C.V(\mathit{target}, \overline{\mathit{arg}})],
+let stem:[A,\sigma] be the actor's appliance and style
+(stem:[C:\mathsf{Actor}[A,\sigma]\in\Gamma]), let
+stem:[\mathsf{req} = \mathsf{env}(\overline{\mathit{arg}})] be the requested
+envelope assembled from the arguments, and let
+stem:[\mathsf{touched}(\mathit{target})] be the set of materials and tools the
+step exposes (the target resource and any tool/acidulant arguments).
+
+[stem]
+++++
+\frac{
+\begin{array}{c}
+\underbrace{V \in \mathrm{dom}(\mathsf{caps}(A))}_{\textbf{(1) capability}} \qquad
+\underbrace{\mathsf{req} \;\subseteq\; \sigma\!\left(\mathcal{E}^{A}_{V}\right)}_{\textbf{(2) device envelope, after style}} \\[10pt]
+\underbrace{\forall \mathcal{M} \in \mathsf{touched}(\mathit{target}).\quad \mathsf{req} \;\prec\; \mathsf{danger}(\mathcal{M})}_{\textbf{(3) material safety: strictly below every hard limit}}
+\end{array}
+}{
+\Gamma \mid \Delta,\, target:_{1} \mathcal{M}_t\langle s\rangle \;\vdash\; C.V(target, \overline{\mathit{arg}}) : \mathsf{Safe} \;\dashv\; \Delta,\, target:_{0} \mathcal{M}_t\langle s'\rangle
+}\ \textsc{(T-Safe)}
+++++
+
+Reading the three premises operationally — exactly the three things
+`check.ml` proves for every step — and the diagnostic each emits on failure:
+
+[cols="1,3,2", options="header"]
+|===
+| Premise | What it checks | Diagnostic on failure
+| **(1) Capability** | the controlling appliance actually has verb stem:[V]. | *`NO_CAPABILITY`*
+| **(2) Device envelope** | every requested quantity (target temp, slope, torque, rpm, reach) lies in the appliance's range *after* the style modifier — non-strict subset stem:[\subseteq]. | *`OVER_TORQUE`* / *`OVER_REACH`* (and `OUT_OF_RANGE` for other dims)
+| **(3) Material safety** | for every touched material/tool, stem:[\mathsf{req}] is *strictly* below every hard limit at the verb's dimension — strict domination stem:[\prec]. | *`CURDLE`* / *`SCORCH`* / *`MELT_TOOL`* (by which material/limit is violated)
+|===
+
+The linear-zone effect of the rule: the step *consumes* its target (grade
+stem:[1\to 0]) and may advance its phase typestate
+(stem:[s \to s']). The residual stem:[\Delta] carries the now-erased
+resource so that any *second* mention of `target` finds it at grade 0 and
+fails to re-consume (`DOUBLE_USE`, §5).
+
+=== 4.1 Why premise (2) is stem:[\subseteq] but premise (3) is stem:[\prec]
+
+A device may be operated to its certified edge: an oven rated `300C` may bake
+at `300C`. Hence containment is *closed* (stem:[\le]). A material at its ruin
+limit is *already ruined*: milk *at* `82C` is curdling. Hence domination is
+*strict* (stem:[<]). The whole safety story is the conjunction: the request
+must fit the device (closed) **and** clear every danger limit (open). A step
+is safe only inside the *intersection* stem:[\sigma(\mathcal E^A_V) \cap \bigcap_{\mathcal M} \mathsf{safe}(\mathcal M)],
+where stem:[\mathsf{safe}(\mathcal M)] is the open complement of the danger
+set — constitution §2.4's "a step is safe only inside the intersection of the
+two envelopes," now formal.
+
+=== 4.2 Worked instances of `T-Safe`
+
+[example]
+.Accepted — `ScaldMilk` (the NoCurdle flagship)
+====
+`Delia_Hob.Heat(target: 80C, slope: GENTLE)` touching `m : Milk`.
+
+. stem:[\mathtt{Heat}\in\mathsf{caps}(\text{Hob})] ✓
+. stem:[\mathsf{req}=\{\Theta\mapsto[80,80],\ \Theta\mathrm{T}^{-1}\mapsto[\cdot,1]\}]
+  (GENTLE stem:[\Rightarrow] slope stem:[\le 1\mathrm{C/s}]);
+  stem:[\sigma_{\text{PRECISION}}(\mathcal E^{\text{Hob}}_{\text{Heat}}) = \{\Theta\mapsto[0,250],\ \Theta\mathrm{T}^{-1}\mapsto[0,3]\}].
+  stem:[\mathsf{req}\subseteq] this ✓ (stem:[80\le250], slope stem:[1\le3]).
+. stem:[\mathsf{danger}(\text{Milk})=\{(\Theta,82),(\Theta,0)\}];
+  stem:[h^{\mathsf{req}}_\Theta = 80 < 82] ✓ and stem:[80 > 0] ✓ (freeze).
+  Note `80C` *does* cross the soft `scald: 70C` ⇒ **warning** (`SCALD_WARN`),
+  compilation proceeds.
+
+All three premises hold ⇒ step typed stem:[\mathsf{Safe}]. This is exactly
+`NoCurdle.agda`'s `tropical-safe` specialised to one minute.
+====
+
+[example]
+.Rejected — `CURDLE`
+====
+`Delia_Hob.Heat(target: 82C, ...)` touching `m : Milk`.
+Premise (3) fails: stem:[h^{\mathsf{req}}_\Theta = 82 \not< 82]. No instance
+of `T-Safe`. Checker emits `CURDLE: Milk reaches hard thermal limit
+curdle=82C at requested 82C`.
+====
+
+[example]
+.Rejected — `MELT_TOOL`
+====
+`Arm.Move(target: Pan, ...)` where the step exposes `Spatula : SILICONE`
+(`melt: 260C (hard)`) to an oven set `target: 280C`.
+Premise (3) fails at the *tool*: stem:[280 \not< 260]. Emits
+`MELT_TOOL: SILICONE spatula reaches melt=260C at requested 280C`.
+====
+
+[example]
+.Rejected — `OVER_TORQUE` / `OVER_REACH` / `NO_CAPABILITY`
+====
+`Arm.Move(target: Jar, torque: 9Nm)` — premise (2) fails:
+stem:[9 \not\le 8 = h^{\mathcal E}_{\mathrm{N\cdot m}}] ⇒ `OVER_TORQUE`. +
+`Arm.Move(target: Shelf, reach: 90cm)` — stem:[0.9 \not\le 0.85] ⇒
+`OVER_REACH`. +
+`Hob.Whisk(...)` — premise (1) fails, stem:[\mathtt{Whisk}\notin\mathsf{caps}(\text{Hob})]
+⇒ `NO_CAPABILITY`.
+====
+
+== 5. Structural obligations and the residual zone
+
+Beyond `T-Safe`, every recipe must discharge the structural obligations of
+constitution §5. These are conditions on how the linear zone is threaded.
+
+=== 5.1 Linearity: leak and double-use
+
+[stem]
+++++
+\frac{\Gamma \mid \Delta,\, r:_{1}\mathcal{M}\langle s\rangle \vdash \mathit{rest} : \mathsf{Total} \dashv \Delta'}
+     {r \notin \mathrm{consumed}(\Delta')\ \Rightarrow\ \textbf{LEAK}}\ \textsc{(Chk-Leak)}
+++++
+
+[stem]
+++++
+\frac{\Gamma \mid \Delta,\, r:_{0}\mathcal{M}\langle s\rangle \vdash C.V(r,\dots) : \mathsf{Safe} \dashv \cdots}
+     {\textbf{DOUBLE\_USE}\ (\text{cannot consume a grade-0 resource})}\ \textsc{(Chk-Double)}
+++++
+
+* *`LEAK`* — a resource still at grade 1 when the mission body ends. No rule
+  consumed it; `Chk-Leak` fires. ("an unused resource at recipe end is a leak
+  error" — constitution §5.)
+* *`DOUBLE_USE`* — a step references a resource already at grade 0. `T-Safe`'s
+  input demands grade 1; the resource is at grade 0; no derivation exists.
+  Equivalently, the split rule (§1.4) cannot derive stem:[1=1+1]. ("a
+  twice-used resource is a double-use error" — constitution §5.)
+
+=== 5.2 Termination, totality, witness — the three mandatory constructs
+
+These are the *typing rules* for `max_duration`, `on_fail`, and `proving`
+(constitution §3, §5; COMMENTARY "three production-mandatory constructs").
+
+*`max_duration` — termination witness.* A step is well-formed only if it
+carries a `max_duration` of dimension Time; that quantity is the well-founded
+*fuel* measure on the implicit `until`-loop.
+
+[stem]
+++++
+\frac{\Gamma\mid\Delta \vdash \mathit{body} : \mathsf{Safe} \dashv \Delta' \quad \Gamma\mid\cdot \vdash \mu : \mathsf{Quantity}[\text{Time}] \quad \mu > 0}
+     {\Gamma\mid\Delta \vdash \mathit{body}\ \mathtt{max\_duration}\ \mu : \mathsf{Terminating} \dashv \Delta'}\ \textsc{(T-MaxDur)}
+++++
+
+A step with no `max_duration` has no derivation ⇒ *`MISSING_MAXDUR`*. The
+measure stem:[\mu] decreases by one tick per loop iteration; reaching 0 takes
+the `on_fail` branch. This is the `fuel` parameter of `heat`/`poach`/`knead`
+in the Agda proofs.
+
+*`on_fail` — total failure handler.* A step is total only if its failure
+branch is inhabited by a named mode, making the step a total function into
+stem:[\{\mathsf{success}\} \uplus \{\mathsf{aborted}, \mathsf{recovered}, \mathsf{warmed}\}]:
+
+[stem]
+++++
+\frac{\Gamma\mid\Delta \vdash \mathit{body} : \mathsf{Terminating} \dashv \Delta' \quad f \in \{\mathtt{ABORT}, \mathtt{RECOVER}, \mathtt{WARM}\}}
+     {\Gamma\mid\Delta \vdash \mathit{body}\ \mathtt{on\_fail}\ f : \mathsf{Total} \dashv \Delta'}\ \textsc{(T-OnFail)}
+++++
+
+A step with no `on_fail` has no derivation ⇒ *`MISSING_ONFAIL`*. (Note: in
+the failure image, a grade-1 target is still consumed — `RECOVER`/`WARM` do
+not return the resource; an aborted egg is permanently lost, modelled by the
+grade staying 0 in stem:[\Delta'].)
+
+*`proving @e` — named existential witness.* A `sync(…) proving @e` block is
+total iff `@e` is a declared echo whose modality the controlling appliance
+offers, supplying the existential sensor witness that releases the barrier.
+
+[stem]
+++++
+\frac{
+\Gamma \vdash @e : \mathsf{Echo}[\mu_e] \quad
+C : \mathsf{Actor}[A,\sigma]\in\Gamma \quad
+\mu_e \in \mathsf{modalities}(A) \quad
+\Gamma\mid\Delta \vdash \overline{\mathit{step}} : \mathsf{Total} \dashv \Delta'
+}{
+\Gamma\mid\Delta \vdash \mathtt{sync}(C)\ \mathtt{proving}\ @e\ \{\overline{\mathit{step}}\} : \mathsf{Total}\ \&\ \exists t.\,@e(t) \dashv \Delta'
+}\ \textsc{(T-Proving)}
+++++
+
+If `@e` is undeclared, or its modality stem:[\mu_e] is not offered by the
+appliance, the block does not type ⇒ *`UNWITNESSED_SYNC`*. The existential
+stem:[\exists t.\,@e(t)] is the `ShimmerWitness`/`WhiteWitness`/`Witness`
+of the Agda proofs.
+
+== 6. The seven elevated types, as rules
+
+=== 6.1 Tropical — bounded-derivative refinement over a trajectory
+
+A tropical setpoint `~ v slope s` is not an equality: it is "approach value
+stem:[v] with rate of change bounded by stem:[s]." Its type is a *refinement
+over the time-indexed quantity stream* produced by the controller, carrying
+both a value bound and a derivative bound, checked against the relevant
+envelopes via `T-Safe`'s premises (2) and (3).
+
+[stem]
+++++
+\frac{
+\Gamma\mid\cdot \vdash v : \mathsf{Quantity}[d] \quad
+\Gamma\mid\cdot \vdash s : \mathsf{Quantity}[d/\text{Time}] \quad
+[\,v - s\!\cdot\!\tau,\ v\,] \subseteq \sigma(\mathcal{E}^A_V)\!\restriction_d \quad
+[\,\cdot,\ v\,] \prec \mathsf{danger}|_d
+}{
+\Gamma\mid\Delta \vdash {\sim}\,v\ \mathtt{slope}\ s : \mathsf{Tropical}[d]
+}\ \textsc{(T-Tropical)}
+++++
+
+The third premise checks the *whole reachable band* of the trajectory — from
+the approach floor stem:[v - s\cdot\tau] up to the setpoint stem:[v] (over the
+`max_duration` stem:[\tau]) — lies inside the device range; the fourth checks
+the setpoint strictly dominates every hard limit at stem:[d]. With a bounded
+slope, monotone approach to stem:[v] means *checking the endpoint stem:[v]
+suffices for the upper hard limit* — this is precisely the integrator-bound
+reasoning that `NoCurdle.agda`/`PoachedEgg.agda` discharge as `tropical-safe`
+(stem:[\texttt{temp-at } t \le \text{target-cap} < \text{boil-envelope}]). A
+trajectory whose setpoint or band crosses a hard limit fails ⇒ `SCORCH` (or
+`CURDLE`); a slope outside the device slope range fails premise (2) ⇒
+`OUT_OF_RANGE` on the slope dimension. *Named-symbol slopes* (`GENTLE`,
+`AGGRESSIVE`) desugar to concrete stem:[d/\text{Time}] quantities supplied by
+the stdlib before this rule applies.
+
+=== 6.2 Linear — use-once with typestate (leak/double-use)
+
+The linear type is governed by the grades of §1 and the consumption threading
+of `T-Safe`. `T-Use` (§3.3) introduces a grade-1 resource; `T-Safe` consumes
+it (grade stem:[1\to0]) and advances its typestate stem:[s\to s']. The two
+failure modes are `Chk-Leak` and `Chk-Double` (§5.1). The *ruin* typestates
+(`CURDLED`, `SCORCHED`, `BURNT`) are absorbing: there is no rule with a
+ruin-state resource in a *consumable* (non-erased) position, so once a
+material's typestate would advance into ruin, `T-Safe`'s premise (3) has
+already failed and the program never reaches that state — "make illegal
+physical states unrepresentable."
+
+[stem]
+++++
+\frac{C.V \text{ would drive } \mathcal M_t : s \to s_{\mathsf{ruin}} \quad s_{\mathsf{ruin}} \in \{\mathtt{CURDLED},\mathtt{SCORCHED},\mathtt{BURNT}\}}
+     {\text{premise (3) of \textsc{T-Safe} fails}\ \Rightarrow\ \text{ruin-named diagnostic; no transition into } s_{\mathsf{ruin}}}\ \textsc{(L-NoRuin)}
+++++
+
+=== 6.3 Dyadic — tensor bind with provenance
+
+The bind `(x, y) <~> A` is the tensor stem:[\mathcal M_x \otimes \mathcal M_y],
+consumed by the binding actor stem:[A] to produce a new linear resource whose
+typestate carries the *provenance* (union of relevant metadata) of both
+factors. Both inputs are consumed; neither survives.
+
+[stem]
+++++
+\frac{
+\Gamma \vdash A : \mathsf{Appliance}[\mathsf{caps}] \quad
+\Delta = \Delta_1 + \Delta_2 \quad
+\Delta_1 \ni x:_{1}\mathcal M_x\langle s_x\rangle \quad
+\Delta_2 \ni y:_{1}\mathcal M_y\langle s_y\rangle
+}{
+\Gamma \mid \Delta,\, x:_1\mathcal M_x, y:_1\mathcal M_y \;\vdash\; (x,y) \mathrel{\mathtt{<\!\sim\!>}} A;\ \dashv\ \Delta,\, x:_0, y:_0,\ z:_{1}(\mathcal M_x\otimes\mathcal M_y)\langle s_x \sqcup s_y\rangle
+}\ \textsc{(T-Bind)}
+++++
+
+The split stem:[\Delta=\Delta_1+\Delta_2] guarantees the two factors are
+*distinct* grade-1 resources (you cannot bind an egg to itself: that would
+need stem:[1=1+1]). The result stem:[z] carries the joined provenance
+stem:[s_x\sqcup s_y] — this is `bind-dough : Flour → Water → Dough KNEADABLE`
+in `Dough.agda`, where Flour and Water are consumed and Dough emerges with the
+joined typestate. The envelope of stem:[\mathcal M_x\otimes\mathcal M_y] is
+the *componentwise intersection* of the two safety envelopes: a dough is no
+more heat-tolerant than its least-tolerant constituent.
+
+=== 6.4 Choreographic — session typing, projection, deadlock-freedom
+
+A `sync(C₁,…,Cₙ){ … }` block is a multiparty session barrier. The global
+choreography stem:[G] is the block body; each actor stem:[C_i] gets a *local
+projection* stem:[G\!\restriction_{C_i}], and the block types iff every
+projection is well-typed and the projections are *compatible* (the
+deadlock-freedom premise).
+
+[stem]
+++++
+\frac{
+\forall i.\ \Gamma\mid\Delta_i \vdash G\!\restriction_{C_i} : \mathsf{Total} \dashv \Delta_i' \quad
+\Delta = \textstyle\sum_i \Delta_i \quad
+\mathsf{compatible}(G\!\restriction_{C_1},\dots,G\!\restriction_{C_n})
+}{
+\Gamma\mid\Delta \vdash \mathtt{sync}(C_1,\dots,C_n)\{G\} : \mathsf{Total} \dashv \textstyle\sum_i\Delta_i'
+}\ \textsc{(T-Sync)}
+++++
+
+The premise stem:[\mathsf{compatible}(\cdots)] is the *deadlock-freedom*
+side-condition of session types (every send has a matching receive; no cyclic
+wait): each actor's projection is dual to its partners' at the barrier. The
+linear zone is *split* across actors (each consumes a disjoint sub-multiset of
+resources) and re-merged at the residual — so two actors cannot both consume
+the same egg. A projection mismatch or a cyclic wait fails this premise ⇒
+*`DEADLOCK`* (well-formedness; not in the keystone error list but emitted by
+`T-Sync`). When the block carries `proving @e`, `T-Proving` (§5.2) supplies
+the additional witness conjunct.
+
+=== 6.5 Echo — postulated witness binder via `proving`
+
+An `echo @e on A.μ;` declaration enters stem:[\Gamma] a *postulated oracle*: a
+binder for a proposition about the physical world on modality stem:[\mu] of
+appliance stem:[A]. It is not derivable; it is a hypothesis the sensor
+pipeline discharges at run time.
+
+[stem]
+++++
+\frac{\Gamma \vdash A : \mathsf{Appliance}[\mathsf{caps}] \quad \mu \in \mathsf{modalities}(A)}
+     {\Gamma \vdash \mathtt{echo}\ @e\ \mathtt{on}\ A.\mu; \;\rightsquigarrow\; \Gamma,\ @e : \mathsf{Echo}[\mu]\ \mathbf{postulated}}\ \textsc{(T-Echo)}
+++++
+
+The `proving @e` rule (`T-Proving`, §5.2) is the *eliminator*: it consumes the
+postulate to certify barrier release, producing the existential
+stem:[\exists t.\,@e(t)]. The proven/postulated boundary becomes the run-time
+trust boundary (constitution §6): at HAL lowering each `Echo[μ]` must bind to
+a *local* sensor (Zero Scams), or the program does not lower to that device. A
+`proving @e` whose `@e` is undeclared or whose modality the appliance lacks ⇒
+*`UNWITNESSED_SYNC`*.
+
+=== 6.6 Ceremonial — reader effect commuting with linearity
+
+A `ceremony C { … }` enters stem:[\Gamma] as an ambient *reader effect*; a
+mission `under C` runs the choreography inside it. A ceremony re-paces and
+re-prioritises but is *forbidden* to change the linear resource count — the
+commutation side condition.
+
+[stem]
+++++
+\frac{
+\Gamma, \mathsf{ceremony}{=}C \mid \Delta \vdash \mathit{body} : \mathsf{Total} \dashv \Delta' \quad
+\underbrace{\mathrm{linres}(\Delta) = \mathrm{linres}(\Delta'_{\!C}) \;\text{iff}\; \mathrm{linres}(\Delta')}_{\text{ceremony commutes with linearity}}
+}{
+\Gamma \mid \Delta \vdash \mathtt{recipe}\ R\ \mathtt{under}\ C\ \{\mathit{body}\} : \mathsf{Total} \dashv \Delta'
+}\ \textsc{(T-Ceremony)}
+++++
+
+The side condition says: running the body *with* ceremony stem:[C] consumes
+exactly the same multiset of grade-1 resources as running it without — the
+reader effect commutes with the linear effect (COMMENTARY: "ceremony effects
+commute with linear-resource effects"). A ceremony may *tighten* a step's
+effective `max_duration` (re-pacing) and raise its `alert_level`/`priority`,
+but it may not duplicate or discard a resource. A ceremony that did so would
+violate the side condition ⇒ *`CEREMONY_NONCOMMUTE`* (well-formedness). Style
+modifiers (§3.4) and ceremony pacing compose: both may only shrink (envelope
+shrink for style, time-budget shrink for ceremony), never widen.
+
+=== 6.7 Primitive
+
+The Primitive type is the dimensioned-quantity layer of §2 (rules `T-Lit`,
+`T-QMul`, `T-QDiv`, `T-QAdd`, `T-Cmp`). It is the numeric carrier for every
+other rule's interval arithmetic. Its only proof obligation is
+dimension-preservation (§2.3 lemma); its only diagnostic is `DIM_MISMATCH`.
+
+== 7. Well-formedness conditions and the error catalogue
+
+=== 7.1 Well-formedness (checked before typing)
+
+A program is *well-formed* iff:
+
+. *Dimensions resolve.* Every literal's unit suffix has a defined
+  base-conversion and dimension; every `range/slope/reach` interval has
+  endpoints of the capability's declared dimension. (else `DIM_MISMATCH`)
+. *Envelope sanity.* In every envelope each interval has
+  stem:[\ell_d \le h_d]; soft limits lie at or below the corresponding hard
+  limit; the danger set is non-empty for any material a recipe heats.
+. *Style monotonicity.* Every `chef … style σ` satisfies
+  stem:[\sigma(\mathcal E)\subseteq\mathcal E] per capability. (else
+  `STYLE_WIDENS`)
+. *Echo modality.* Every `echo @e on A.μ` has stem:[\mu\in\mathsf{modalities}(A)].
+. *Mandatory triple.* Every step has a `max_duration` (Time-dimensioned,
+  stem:[>0]), an `until` condition, and an `on_fail`. (else `MISSING_MAXDUR`
+  / `MISSING_UNTIL` / `MISSING_ONFAIL`)
+. *Grade saturation at mission end.* The residual linear zone has every
+  grade-1 resource demoted to grade 0. (else `LEAK`)
+. *Ceremony commutation.* `under C` satisfies the §6.6 side condition. (else
+  `CEREMONY_NONCOMMUTE`)
+. *Choreographic compatibility.* Every `sync` body's projections are
+  compatible. (else `DEADLOCK`)
+
+=== 7.2 The error catalogue
+
+The exact diagnostic names the checker emits, grouped by the premise/obligation
+that fails:
+
+[cols="1,2,3", options="header"]
+|===
+| Error | Fails | Meaning
+| *`CURDLE`*          | `T-Safe` (3) | a heat step reaches/exceeds a material's *hard* thermal ruin limit (milk `curdle`).
+| *`SCORCH`*          | `T-Safe` (3) | a heat/bake step reaches a material's hard thermal limit (egg `scorch`, surface `burn`).
+| *`MELT_TOOL`*       | `T-Safe` (3) | a *tool* is exposed at/above its `melt`/`char` hard limit (silicone spatula).
+| *`OVER_TORQUE`*     | `T-Safe` (2) | requested torque exceeds the appliance's (post-style) torque range (arm `> 8Nm`).
+| *`OVER_REACH`*      | `T-Safe` (2) | requested reach exceeds the appliance's (post-style) reach range (arm `> 85cm`).
+| *`NO_CAPABILITY`*   | `T-Safe` (1) | the controlling appliance lacks the requested verb (hob asked to `Whisk`).
+| *`DOUBLE_USE`*      | `Chk-Double` | a resource is consumed twice (grade-0 in consumable position; stem:[1\ne1+1]).
+| *`LEAK`*            | `Chk-Leak`   | a grade-1 resource is unused at mission end.
+| *`MISSING_ONFAIL`*  | `T-OnFail`   | a step omits its `on_fail` handler.
+| *`UNWITNESSED_SYNC`*| `T-Proving`  | a `proving @e` names an undeclared echo or one whose modality the appliance lacks.
+| *`DIM_MISMATCH`*    | `T-Cmp`/`T-QAdd`/wf | a dimensioned operation mixes incompatible dimensions (compare `82C` with `5min`).
+|===
+
+Auxiliary diagnostics (emitted by the same rules, outside the keystone list):
+`MISSING_MAXDUR`, `MISSING_UNTIL`, `OUT_OF_RANGE` (premise (2) on a non-torque/
+reach dimension, e.g. slope or rpm), `STYLE_WIDENS`, `CEREMONY_NONCOMMUTE`,
+`DEADLOCK`, and the *warning* (never blocking) `SCALD_WARN` for crossing a
+soft limit.
+
+== 8. Soundness: well-typed recipes do not reach a ruin phase
+
+The whole type system exists to make one theorem true. We state it precisely,
+in the shape `NoCurdle.agda` mechanises.
+
+[NOTE]
+.Theorem (Physical Safety / "no ruin")
+====
+Let stem:[R] be a recipe with stem:[\Gamma\mid\Delta\vdash R : \mathsf{Total}\dashv\Delta'].
+Then for *every* run of stem:[R] under the postulated echo oracles and the
+chef-style/controller contracts:
+
+. *(No ruin)* No material or tool ever enters a ruin typestate
+  (`CURDLED`, `SCORCHED`, `BURNT`, melted). Equivalently: at every step and
+  every reachable trajectory point, the exposed quantity is *strictly* below
+  every hard limit of every touched material/tool —
+  stem:[\forall \mathcal M \in \mathsf{touched}.\ \mathsf{req} \prec \mathsf{danger}(\mathcal M)].
+. *(No over-actuation)* No appliance is ever driven outside its post-style
+  capability envelope —
+  stem:[\mathsf{req}\subseteq\sigma(\mathcal E^A_V)] at every step.
+. *(Linearity)* Each grade-1 resource is consumed exactly once: no
+  duplication, no leak.
+. *(Termination & totality)* Every step terminates within its `max_duration`
+  fuel and returns a value in
+  stem:[\{\mathsf{success}\}\uplus\{\mathsf{aborted},\mathsf{recovered},\mathsf{warmed}\}];
+  the recipe is a total function.
+. *(Witness)* Every successful `sync … proving @e` carries an existential
+  sensor witness stem:[\exists t.\,@e(t)].
+====
+
+*Proof shape (progress + preservation, relative to the trusted base).* By
+induction on the typing derivation.
+
+* *Preservation.* `T-Safe` is the only rule that advances a material's
+  typestate, and its premise (3) (stem:[\mathsf{req}\prec\mathsf{danger}])
+  forbids any transition into a ruin state (`L-NoRuin`, §6.2). Hence no
+  well-typed step destroys the "all touched materials clear of every hard
+  limit" invariant. Premise (2) preserves the "no over-actuation" invariant.
+  Context split/merge (§1.4) preserves the grade bookkeeping: a grade-1
+  resource consumed by `T-Safe`/`T-Bind` is demoted to 0 and cannot be
+  re-consumed.
+* *Progress.* Every step has the mandatory triple (§5.2), so the `until`-loop
+  has decreasing fuel (`T-MaxDur` ⇒ termination), an inhabited failure branch
+  (`T-OnFail` ⇒ no stuck step), and — where present — a witnessed barrier
+  release (`T-Proving`). The result type is the total sum
+  stem:[\{success\}\uplus\{aborted,recovered,warmed\}].
+* *Linearity* falls out of grade saturation (§7.1.6): the residual zone
+  having every grade-1 resource demoted to 0, with no contraction available,
+  is exactly "consumed once, no leak."
+
+*Trusted base.* The theorem holds *relative to* two classes of postulate the
+type system deliberately does not discharge (constitution §6, COMMENTARY
+§Echo): (a) the *echo soundness* postulates — each sensor classifier reports
+truthfully (`temp-at`, `white-set-at`, `viscosity-at` in the Agda files); and
+(b) the *controller contracts* — each style/`GENTLE` controller honours its
+slope envelope (`gentle-bounded`). At HAL lowering each is discharged by a
+local sensor binding / a certified device envelope, or the program does not
+lower to that device. Within that trusted base, *a well-typed KitchenSpeak
+recipe cannot curdle the milk, scorch the egg, bake the spatula, or
+over-torque the arm — those programs do not type-check.* This is the
+recipe-level generalisation that `proofs/agda/NoCurdle.agda` mechanises
+(`tropical-safe`, `served-is-safe`), and it is the formal content of the
+constitution's slogan: **make illegal physical states unrepresentable.**

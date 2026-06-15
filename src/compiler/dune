@@ -1,0 +1,6 @@
+; SPDX-License-Identifier: MPL-2.0
+; KitchenSpeak v2.0 reference front end + physical-safety checker.
+; Dependency-free: OCaml stdlib only, so `dune build` needs no opam installs.
+(executable
+ (name main)
+ (flags (:standard -w +a-4-40-42-44-45-70)))

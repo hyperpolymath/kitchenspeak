@@ -10,10 +10,43 @@ machine-executable actions for MQTT/Matter-class appliances, while
 maintaining physical and digital safety through a multi-layered type
 system.
 
-*Status:* CLASS PROJECT. Specification stable at v1.0; grammar and worked
-examples are in active development. Not intended for deployment on actual
-kitchen hardware. Experimental companion to the other languages in this
-repository.
+*Status:* v1.0 specification stable (the original class teaching artefact).
+*v2.0 elevation in progress* — a physically-grounded type system, a reference
+compiler, and a machine-checked material-safety proof. Not intended for
+deployment on actual kitchen hardware yet.
+
+== KitchenSpeak v2.0 — the production elevation
+
+v2.0 turns typing into the *superpower*: physical safety lives in the type
+system, so a program that could *curdle the milk*, *scorch the egg*, *bake the
+silicone spatula*, or *over-torque the robot arm* **fails to compile**. Materials
+carry thermal/mechanical/chemical safety envelopes; appliances carry capability
+envelopes; an action type-checks only inside the intersection of the two. The same
+types lower to machine-checked Agda proofs *and* to a HAL over Matter / MQTT /
+ROS 2.
+
+Start at `docs/design/0000-blueprint-index.adoc` (the document map and the
+"golden thread" tracing no-curdle from syntax → type rule → proof → HAL).
+
+[source,bash]
+----
+# Build and run the reference compiler (dependency-free OCaml; needs dune).
+cd src/compiler && dune build
+KSC=_build/default/main.exe
+
+$KSC check ../../examples/v2/poached-egg.ks          # => OK
+$KSC check ../../examples/v2/negative/curdle-milk.ks # => error [CURDLE] ... (exit 1)
+$KSC lower --target matter ../../examples/v2/poached-egg.ks   # => Matter trace JSON
+
+# Run the full accept/reject corpus (14 cases):
+bash tests/run-corpus.sh
+
+# Machine-check the v2.0 flagship safety proof:
+make -C proofs nocurdle    # (or: agda proofs/agda/NoCurdle.agda)
+----
+
+Not intended for deployment on actual kitchen hardware. Experimental companion to
+the other languages in this repository.
 
 == Origin
 

@@ -1,0 +1,663 @@
+// SPDX-License-Identifier: MPL-2.0
+// Copyright (c) 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+= KitchenSpeak v2.0 — Lexical Grammar
+:toc:
+:toclevels: 3
+:icons: font
+:stem: latexmath
+
+[NOTE]
+====
+This document is *normative*. It closes open item *O3* of `grammar.ebnf`
+("`actors`, `actor`, `action`, `params`, `metric`, `comparison`, `value`,
+`time`, `error_handle`, `identifier`, `integer`, `ceremony_id`, `echo_id`,
+`resource_id`, `actor_id` are lexical / sub-grammar placeholders") by giving a
+complete, automaton-level specification of the KitchenSpeak token stream.
+
+It elaborates — and must not contradict — `docs/design/0001-v2-constitution.adoc`
+(the binding contract). In particular the dimension set of constitution §2.1,
+the keyword vocabulary of §2.2–§2.5 and §3, the slope/style envelope-modifier
+semantics of §2.4/§2.5, and the safety judgment of §5 are taken as given here;
+this document supplies the *lexical surface* that feeds them. Where the
+constitution writes a token (`82C`, `<~>`, `GENTLE`, `Pa·s`), this document
+fixes its exact spelling, its automaton, and its normalised value.
+
+The lexer is the boundary between bytes and the parser. It produces a stream of
+*tokens*, each a triple stem:[(class, lexeme, value)] where stem:[value] is a
+class-specific payload (e.g. a normalised dimensioned quantity for a numeric
+literal). The parser of `grammar.ebnf` consumes that stream; the placeholders of
+O3 are resolved to the token classes named in <<placeholder-map>>.
+====
+
+== 1. Source representation, whitespace, and Unicode
+
+=== 1.1 Encoding
+
+A KitchenSpeak source file is a stream of Unicode scalar values encoded as
+*UTF-8*. The lexer decodes UTF-8 to scalar values *before* tokenisation; all
+automata in this document range over scalar values, not bytes. A byte sequence
+that is not well-formed UTF-8 is a *lexical error* (`E-ENCODING`) raised at the
+offending byte offset.
+
+The optional UTF-8 byte-order-mark (U+FEFF) is permitted *only* as the first
+scalar of the file and is discarded. A U+FEFF anywhere else is `E-ENCODING`.
+
+=== 1.2 Unicode policy
+
+KitchenSpeak is deliberately *near-ASCII* in its identifier and keyword surface
+to keep recipes typable on any keyboard. Exactly three non-ASCII scalars are
+admitted, each in one fixed role:
+
+[cols="1,2,4", options="header"]
+|===
+| Scalar | Name | Sole admitted role
+
+| U+00B7 `·` | MIDDLE DOT | The unit-product separator inside a compound unit suffix (`Pa·s`, and only there — see <<units>>). Never an operator, never in an identifier.
+| U+00B0 `°` | DEGREE SIGN | *Optional* ornament immediately before a temperature unit letter: `82°C` is accepted as an exact synonym of `82C`. It carries no value of its own.
+| U+03BC `μ` | GREEK SMALL LETTER MU | The SI micro- prefix, admitted only as the first scalar of a recognised unit suffix (`μm`, `μs`). The ASCII fallback spelling `um`/`us` is also accepted and normalises identically.
+|===
+
+Every other scalar outside the ASCII range U+0000–U+007F is rejected with
+`E-UNICODE` if it appears anywhere except inside a comment or a string-valued
+echo modality literal (neither of which is constrained). Notably, "smart quotes",
+en/em dashes, and non-breaking spaces are *not* silently accepted; this prevents
+copy-paste hazards in a safety language.
+
+[NOTE]
+====
+The `·` of `Pa·s` is the canonical form. For keyboard-only authoring, the ASCII
+digraph `Pa.s` is *not* accepted (it would collide with the member-access `.`
+operator under maximal munch); instead the ASCII fallback `Pas` is accepted and
+normalises to the same dimension. Authors are encouraged to use `·`.
+====
+
+=== 1.3 Whitespace and line terminators
+
+[cols="1,3", options="header"]
+|===
+| Class | Scalars
+
+| Inline whitespace | U+0020 SPACE, U+0009 TAB.
+| Line terminator   | U+000A LF, or the pair U+000D U+000A (CRLF, normalised to a single LF), or a lone U+000D CR (normalised to LF).
+|===
+
+Whitespace and line terminators are *not* significant to the grammar: they
+separate tokens and are otherwise discarded (KitchenSpeak is free-form, not
+layout-sensitive). Their *only* lexical force is to terminate maximal munch
+(<<munch>>) and to bound line comments. A vertical tab (U+000B), form feed
+(U+000C), or other Unicode whitespace is `E-UNICODE`.
+
+Tokens are separated either by whitespace or by an adjacency that is
+unambiguous under maximal munch. `82C` is one token; `82 C` is the numeric
+literal `82C`?  — *no*: a digit run followed by whitespace then a bare letter is
+two tokens (`82` is dimensionless, `C` is an identifier) and will fail the
+parser, not the lexer. A unit suffix must be *adjacent* to its magnitude.
+
+== 2. Comments
+
+[cols="1,1,4", options="header"]
+|===
+| Form | Syntax | Semantics
+
+| Line comment | `//` … to end of line | From the `//` up to but not including the next line terminator (or EOF). Discarded. Not recursive.
+| Block comment | `/*` … `*/` | From `/*` to the matching `*/`. *Nesting is supported*: `/*` and `*/` are balanced, so `/* a /* b */ c */` is a single comment. Discarded.
+|===
+
+Block comments may span line terminators. An unterminated block comment (EOF
+before the outermost `*/`) is `E-COMMENT`. A `*/` with no open block comment is
+not special — it tokenises as `*` `/` (and the parser rejects it). Comments are
+recognised everywhere whitespace is, and bind tighter than maximal munch: the
+two-scalar opener `/*` is recognised before `/` could be taken as an operator.
+
+[source]
+----
+// line comment — discarded to EOL
+material Milk { /* curdle point is the
+                  hard limit; see §2.2 of the constitution */
+  thermal { curdle: 82C }
+}
+----
+
+== 3. Token classes (overview)
+
+The lexer emits exactly these top-level classes. Each is specified by an
+automaton in the sections that follow.
+
+[cols="1,3,3", options="header"]
+|===
+| Class | Role | Section
+
+| `KEYWORD`      | Reserved words of the language. | <<keywords>>
+| `SLOPE_TAG`    | `GENTLE` / `MODERATE` / `AGGRESSIVE`. | <<enums>>
+| `STYLE_TAG`    | `PRECISION` / `POWER` / `BALANCED`. | <<enums>>
+| `FAIL_TAG`     | `ABORT` / `RECOVER` / `WARM`. | <<enums>>
+| `PHASE_TAG`    | `LIQUID`, `SET`, `RAW`, `COOKED`, … phase typestate literals. | <<enums>>
+| `IDENT`        | User-chosen names. | <<ident>>
+| `QTY`          | Dimensioned numeric literal (`82C`, `0.8Pa·s`). | <<numeric>>
+| `NUM`          | Bare (dimensionless) numeric literal. | <<numeric>>
+| `ECHO_REF`     | `@name` — an echo reference. | <<sigils>>
+| `OP`           | Punctuation and operators (`~ @ <~> -> .. . : ; , ( ) { }`). | <<operators>>
+| `EOF`          | End of input (synthetic, one terminal token). | —
+|===
+
+`SLOPE_TAG`, `STYLE_TAG`, `FAIL_TAG`, and `PHASE_TAG` are split out from
+`KEYWORD` because they are *value-carrying* enumerated tokens (they have numeric
+or typestate denotations), whereas keywords are pure syntax. All four are
+nonetheless reserved (an identifier may not collide with them — see <<reserved>>).
+
+== 4. Keywords [[keywords]]
+
+The following words are *reserved keywords*. They are matched as `IDENT`-shaped
+runs and then reclassified by exact, *case-sensitive* lookup (see <<munch>>):
+an identifier-shaped lexeme that is in this table becomes a `KEYWORD`, otherwise
+it stays `IDENT`.
+
+[cols="1,1,1", options="header"]
+|===
+| Declaration heads | Mission & step | Capability / envelope
+
+| `material`   | `recipe`       | `capability`
+| `tool`       | `under`        | `range`
+| `appliance`  | `use`          | `slope`
+| `chef`       | `as`           | `reach`
+| `controls`   | `sync`         | `thermal`
+| `style`      | `proving`      | `mechanical`
+| `echo`       | `until`        | `chemical`
+| `on`         | `max_duration` | `phase`
+| `ceremony`   | `on_fail`      | `soft`
+|             |                | `hard`
+|===
+
+[NOTE]
+====
+*Compatibility with v1.0.* The class v1.0 grammar (`SPEC.adoc`, `grammar.ebnf`
+Section A) uses `orchestrate` as the mission head. The v2.0 constitution §3
+renames the mission head to `recipe`. To keep the constitution §9 promise
+("every well-typed v1.0 program remains well-typed"), `orchestrate` is a
+*reserved keyword alias* for `recipe`: both lex to a `KEYWORD` and the parser
+treats them identically. `orchestrate` is therefore included in the reserved set
+even though it does not appear in the table above.
+====
+
+The complete reserved set is the union of: the table above, the alias
+`orchestrate`, and the enumerated value-tokens of <<enums>> (`GENTLE`,
+`MODERATE`, `AGGRESSIVE`, `PRECISION`, `POWER`, `BALANCED`, `ABORT`, `RECOVER`,
+`WARM`, and the phase tags). The literals `true` and `false` are *also* reserved
+(they appear in `until @white_set == true`) and lex as `KEYWORD` carrying a
+boolean value.
+
+=== 4.1 Reservation rule [[reserved]]
+
+[stem]
+++++
+\mathrm{classify}(\ell) =
+\begin{cases}
+\textsf{KEYWORD} & \ell \in \mathcal{K} \\
+\textsf{SLOPE\_TAG} & \ell \in \{\texttt{GENTLE},\texttt{MODERATE},\texttt{AGGRESSIVE}\} \\
+\textsf{STYLE\_TAG} & \ell \in \{\texttt{PRECISION},\texttt{POWER},\texttt{BALANCED}\} \\
+\textsf{FAIL\_TAG}  & \ell \in \{\texttt{ABORT},\texttt{RECOVER},\texttt{WARM}\} \\
+\textsf{PHASE\_TAG} & \ell \in \mathcal{P} \\
+\textsf{IDENT} & \text{otherwise}
+\end{cases}
+++++
+
+where stem:[\mathcal{K}] is the keyword table (incl. `orchestrate`, `true`,
+`false`) and stem:[\mathcal{P}] is the phase set of <<enums>>. No user identifier
+may equal any reserved word; the lexer never emits `IDENT` for a reserved lexeme,
+so the parser cannot bind one.
+
+== 5. Identifiers [[ident]]
+
+An identifier names a material, tool, appliance, chef, ceremony, capability
+verb, echo, resource binding, argument key, or metric.
+
+.Regular definition
+[source]
+----
+ident_start ::= [A-Za-z_]
+ident_cont  ::= [A-Za-z0-9_]
+IDENT       ::= ident_start ident_cont*
+----
+
+.Automaton
+[stem]
+++++
+\xrightarrow{\;[A\text{-}Za\text{-}z\_]\;} q_1 \;\;(\circlearrowleft [A\text{-}Za\text{-}z0\text{-}9\_])\;\; \Rightarrow \textsf{accept}
+++++
+
+Identifiers are *case-sensitive* and ASCII-only (Unicode letters outside ASCII
+are `E-UNICODE`, by §1.2). There is no length limit. By convention (not enforced
+lexically) declared *types* (materials, appliances, chefs, echoes) are
+`PascalCase` or `Snake_Case` (`Delia_Hob`, `Baridi_Robot`), verbs are
+`PascalCase` (`Heat`, `Poach`, `Knead`), and argument keys are `lower_snake`
+(`target`, `slope`, `acidulant`, `depth`). The capability verb in
+`actor.Verb(...)` and the metric in `~ metric cmp qty` are both `IDENT`.
+
+The leading `@` of an echo reference is *not* part of the identifier; see
+<<sigils>>. The identifier body after `@` obeys the `IDENT` automaton.
+
+== 6. Numeric and dimensioned literals [[numeric]]
+
+This is the heart of the lexical layer: the surface form of the
+*dimension-indexed quantities* of constitution §2.1.
+
+=== 6.1 The magnitude
+
+[source]
+----
+digit       ::= [0-9]
+int_part    ::= digit { digit }                  (* no leading-zero rule; "082" allowed, value 82 *)
+frac_part   ::= "." digit { digit }
+magnitude   ::= int_part [ frac_part ]
+----
+
+The magnitude is a non-negative decimal. There is *no* sign token at the lexical
+level — negative envelope endpoints do not occur in KitchenSpeak (temperatures,
+masses, torques, rates, lengths, viscosities, powers, durations are all
+non-negative magnitudes; a "below freezing" limit such as `0C` is expressed in
+its own unit). The magnitude is read as an exact rational: `0.8` is
+stem:[8/10], not an IEEE double. There is no exponent (`e`) syntax; recipe
+quantities are human-scale.
+
+A magnitude with a `.` but no fractional digit (`5.`) is `E-NUMBER`; a `.`
+with no integer part (`.8`) is *not* a number at all (the leading `.` would be
+the `.` or `..` operator — see maximal munch).
+
+=== 6.2 The unit suffix and the dimension map [[units]]
+
+A magnitude *immediately followed* (no whitespace) by a recognised *unit
+suffix* is a `QTY`; a magnitude with no suffix is a `NUM` (dimension
+`Dimensionless`). The suffix automaton matches the longest recognised unit
+string (maximal munch within the suffix table). The full normative suffix table:
+
+[cols="1,1,1,2,1", options="header"]
+|===
+| Suffix | Dimension (constitution §2.1) | Base unit | Normalisation: stem:[mag_{base} =] | Example → base
+
+| `C`        | Temperature  | °C            | stem:[mag]            | `82C` → 82 °C
+| `°C`       | Temperature  | °C            | stem:[mag]            | `82°C` → 82 °C
+| `K`        | Temperature  | °C            | stem:[mag - 273.15]   | `355.15K` → 82 °C
+| `s`        | Time         | s             | stem:[mag]            | `90s` → 90 s
+| `ms`       | Time         | s             | stem:[mag / 1000]     | `500ms` → 0.5 s
+| `μs` / `us`| Time         | s             | stem:[mag / 10^{6}]   | `2000us` → 0.002 s
+| `min`      | Time         | s             | stem:[mag \times 60]  | `5min` → 300 s
+| `h`        | Time         | s             | stem:[mag \times 3600]| `2h` → 7200 s
+| `g`        | Mass         | g             | stem:[mag]            | `300g` → 300 g
+| `kg`       | Mass         | g             | stem:[mag \times 1000]| `1.5kg` → 1500 g
+| `mg`       | Mass         | g             | stem:[mag / 1000]     | `250mg` → 0.25 g
+| `Nm`       | Torque       | N·m           | stem:[mag]            | `8Nm` → 8 N·m
+| `mNm`      | Torque       | N·m           | stem:[mag / 1000]     | `800mNm` → 0.8 N·m
+| `rpm`      | AngularRate  | rad/s         | stem:[mag \times 2\pi/60] | `80rpm` → 8.3776 rad/s
+| `rad/s`    | AngularRate  | rad/s         | stem:[mag]            | `5rad/s` → 5 rad/s
+| `m`        | Length       | m             | stem:[mag]            | `2m` → 2 m
+| `cm`       | Length       | m             | stem:[mag / 100]      | `4cm` → 0.04 m
+| `mm`       | Length       | m             | stem:[mag / 1000]     | `12mm` → 0.012 m
+| `μm` / `um`| Length       | m             | stem:[mag / 10^{6}]   | `50um` → 0.00005 m
+| `Pa·s`     | Viscosity    | Pa·s          | stem:[mag]            | `0.8Pa·s` → 0.8 Pa·s
+| `Pas`      | Viscosity    | Pa·s          | stem:[mag]            | `0.8Pas` → 0.8 Pa·s  (ASCII fallback)
+| `mPa·s`    | Viscosity    | Pa·s          | stem:[mag / 1000]     | `800mPa·s` → 0.8 Pa·s
+| `W`        | Power        | W             | stem:[mag]            | `100W` → 100 W
+| `kW`       | Power        | W             | stem:[mag \times 1000]| `2kW` → 2000 W
+| `C/s`      | Temperature / Time | °C/s    | stem:[mag]            | `2C/s` → 2 °C/s
+| `°C/s`     | Temperature / Time | °C/s    | stem:[mag]            | `5°C/s` → 5 °C/s
+| `K/s`      | Temperature / Time | °C/s    | stem:[mag]            | `2K/s` → 2 °C/s (rate; offset cancels)
+| `rpm/s`    | AngularRate / Time | rad/s²  | stem:[mag \times 2\pi/60] | `40rpm/s` → 4.1888 rad/s²
+|===
+
+Each `QTY` token's *value* is the pair stem:[(mag_{base},\ \mathbf{d})] where
+stem:[\mathbf{d}] is the *dimension vector* (the §2.1 `dim`), e.g. `Nm` carries
+stem:[\mathbf{d} = \texttt{Torque}], `C/s` carries
+stem:[\mathbf{d} = \texttt{Div(Temperature, Time)}], `Pa·s` carries
+stem:[\mathbf{d} = \texttt{Viscosity}] (which is definitionally
+stem:[\texttt{Mul(Pressure, Time)}] but kept atomic for the kitchen set).
+Normalisation to base unit is applied at lex time so the type checker compares
+magnitudes in one canonical unit per dimension; the *original lexeme* is retained
+for diagnostics.
+
+[IMPORTANT]
+====
+Note the deliberate distinction for *temperature* vs *temperature rate*. A
+Kelvin temperature carries the additive offset (`K` → subtract 273.15); a Kelvin
+*rate* (`K/s`) does not, because a rate is a difference and the offset cancels.
+The lexer applies the offset only for the absolute-temperature suffixes
+(`C`, `°C`, `K`), never inside a `.../s` compound. This is the one place where
+the suffix's structure changes the normalisation, and it is exactly the place a
+naive lexer would scorch the egg by treating 2 K/s as 2 − 273.15.
+====
+
+=== 6.3 Compound-unit lexical structure
+
+A *compound* unit suffix is one containing `/` (a quotient: `C/s`, `rad/s`,
+`rpm/s`, `K/s`) or `·` (a product: `Pa·s`, `mPa·s`). Compound suffixes are
+matched *atomically* by the suffix automaton — the `/` inside `C/s` is *part of
+the unit token*, not the division operator, and the `·` inside `Pa·s` is the
+unit-product separator of §1.2, never an operator. This is resolved entirely by
+maximal munch over the suffix table: from the magnitude's end, the lexer greedily
+matches the longest entry in the table.
+
+.Suffix automaton (informal NFA, longest-match)
+[source]
+----
+After magnitude, attempt suffixes in this priority (longest literal wins):
+  "°C/s" | "rpm/s" | "rad/s" | "mPa·s" | "Pa·s" | "Pas" | "C/s" | "K/s"
+| "°C"   | "mNm" | "Nm"   | "min"  | "rpm"   | "kg"  | "mg"  | "ms"
+| "μs"|"us" | "μm"|"um" | "kW" | "cm" | "mm"
+| "C" | "K" | "s" | "h" | "g" | "m" | "W"
+If none matches → the magnitude is a NUM (Dimensionless).
+A suffix-shaped run not in the table (e.g. "82Q") → E-UNIT at the suffix.
+----
+
+The single-letter suffixes are listed *last* so that `min` is never mis-read as
+`m` (Length) followed by identifier `in`, and `ms` is never `m`+`s`, and `Nm`
+beats `N`+`m`. Adjacency is mandatory: `5 min` (with a space) is `NUM 5` then
+`KEYWORD`? no — `min` is not a keyword, so it is `IDENT min`; the parser rejects
+the pair. Only the adjacent `5min` is a `QTY`.
+
+A magnitude immediately followed by an `ident_start` scalar that does *not* begin
+any table suffix (e.g. `82x`) is `E-UNIT`: a number butting against letters is
+always an attempted unit and an unrecognised one is an error, never silently two
+tokens. (This makes mis-typed units loud rather than silent.)
+
+== 7. Enumerated value tokens [[enums]]
+
+These tokens are reserved words that *carry a value*. Their denotations are
+fixed by constitution §2.4 (slope), §2.5 (style/chef), §3 (`on_fail`), and §2.2
+(phase typestate).
+
+=== 7.1 Slope tags
+
+A `SLOPE_TAG` selects a *bounded-derivative envelope* — a multiplicative ceiling
+on the rate at which a capability may approach its setpoint, expressed as a
+fraction of the appliance capability's declared `slope` range
+(constitution §2.4, `slope: 0C/s .. 5C/s`). The tag scales the *upper* slope
+bound the controller is permitted to command:
+
+[cols="1,1,3", options="header"]
+|===
+| `SLOPE_TAG` | Envelope-modifier (fraction of declared max slope) | Reading
+
+| `GENTLE`     | stem:[0.30 \times s_{max}] | Slow, overshoot-averse approach. The poached-egg `slope: GENTLE` caps the Hob (max 5 °C/s) at 1.5 °C/s.
+| `MODERATE`   | stem:[0.65 \times s_{max}] | Balanced default.
+| `AGGRESSIVE` | stem:[1.00 \times s_{max}] | Full declared slope; never exceeds the appliance envelope (the cap is the device's own ceiling).
+|===
+
+The value carried by the token is the multiplier stem:[\{0.30, 0.65, 1.00\}].
+Crucially, a slope tag can only *shrink or meet* the appliance envelope, never
+widen it (stem:[\le 1.00]); this is the lexical expression of the
+constitution §5 rule that requested envelopes must lie *inside* capability
+ranges. The type checker reads slope tags through this table when computing the
+"req ⊆ cap" obligation.
+
+=== 7.2 Style tags
+
+A `STYLE_TAG` is a *chef-level* envelope modifier (constitution §2.5: "Style
+tightens slopes/jitter; it can only shrink envelopes, never widen them"). Where a
+slope tag scales the approach rate of a single step, a style tag applies a
+persona-wide tightening to *both* the slope ceiling and the permitted jitter
+(setpoint tolerance band):
+
+[cols="1,1,1,3", options="header"]
+|===
+| `STYLE_TAG` | slope factor | jitter factor | Reading
+
+| `PRECISION` | stem:[\times 0.50] | stem:[\times 0.25] | Delia: low jitter, high accuracy. Halves the slope ceiling and quarters the tolerance band. Used for poaching, tempering, emulsions.
+| `BALANCED`  | stem:[\times 1.00] | stem:[\times 1.00] | Identity modifier; the appliance/slope envelope is used as-is.
+| `POWER`     | stem:[\times 1.00] | stem:[\times 1.50] | Jamie: full slope, *looser* tolerance band (faster settling at the cost of overshoot margin). Note the slope factor is capped at 1.00 — POWER never widens the slope past the appliance envelope, it only relaxes jitter.
+|===
+
+The token value is the pair stem:[(slope\_factor,\ jitter\_factor)]. Style and
+slope compose multiplicatively and the product is *clamped* at the appliance
+envelope: a `PRECISION` chef issuing a `GENTLE` step commands at most
+stem:[0.50 \times 0.30 = 0.15] of the device's max slope. Because every factor is
+stem:[\le 1] on the slope axis, the constitution's "style can only shrink" rule
+holds by construction at the lexical-value level. (The jitter axis may exceed 1
+for `POWER`, which loosens a *quality* band, not a *safety* ceiling — it can never
+push past a material's hard limit, which is enforced separately in §5.)
+
+=== 7.3 Fail tags
+
+A `FAIL_TAG` is the value of the mandatory `on_fail` clause (constitution §3, §5
+totality obligation). Each names a constructor of the step's failure image
+stem:[\{success\} \uplus \{aborted, recovered, warmed\}]:
+
+[cols="1,3", options="header"]
+|===
+| `FAIL_TAG` | Denotation
+| `ABORT`   | Stop the mission; release resources to safe state; the step's linear inputs are recorded as consumed-on-failure. The `Aborted` constructor (cf. `PoachedEgg.agda` / `Dough.agda`).
+| `RECOVER` | Attempt a bounded recovery (supervisor override / extension) within the same `max_duration` envelope. The `Recovered` constructor.
+| `WARM`    | Hold the partial result at a safe holding temperature pending operator attention. The `HeldWarm` family.
+|===
+
+=== 7.4 Phase tags
+
+A `PHASE_TAG` is a phase-typestate literal (constitution §2.2). The reserved
+phase set stem:[\mathcal{P}] for v2.0 is:
+
+[cols="1,3", options="header"]
+|===
+| Group | Members
+| Stable phases | `LIQUID`, `SOLID`, `GAS`, `SET`, `WHOLE`, `RAW`, `COOKED`, `CHOPPED`, `KNEADABLE`, `KNEADED`, `RAW_POWDER`, `AT_POACH_TEMP`, `COLD`
+| Ruin phases (absorbing failure states) | `CURDLED`, `SCORCHED`, `BURNT`
+|===
+
+Phase tags carry their identity plus a boolean `is_ruin` flag (true for the
+ruin group). The checker forbids any typestate transition *into* a ruin phase
+(constitution §2.2: "the *ruin* phases … are absorbing failure states the
+checker forbids entering"). The phase set is *closed* at the lexical level: a new
+phase requires a spec amendment, so that a typo'd phase (`LIQIUD`) lexes as a
+bare `IDENT` and is caught by the parser/checker rather than silently admitted as
+a novel typestate.
+
+== 8. Sigil tokens: `@` and `~` [[sigils]]
+
+Two scalars introduce *prefix-sigil* constructs. They are subtle because each is
+both a stand-alone operator and a token prefix; maximal munch (<<munch>>)
+disambiguates.
+
+=== 8.1 `@` — echo reference (`ECHO_REF`)
+
+[source]
+----
+ECHO_REF ::= "@" ident_start ident_cont*
+----
+
+An `@` *immediately followed* by an `ident_start` scalar is a single `ECHO_REF`
+token whose value is the identifier body (the `@white_set`, `@water_shimmer`,
+`@viscosity` of the examples). The `@` is *not* an operator in this position. An
+`@` *not* followed by `ident_start` (e.g. `@ x` with a space, or `@(`) is the
+bare `@` operator (`OP`) — used in the v1.0 `echo_witness` production
+`"@", metric, comparison, value`. In practice nearly every `@` is an `ECHO_REF`;
+the bare-operator case exists only to keep the v1.0 grammar's literal `"@"`
+terminal lexable.
+
+=== 8.2 `~` — tropical sigil
+
+`~` is always the bare tropical operator (`OP`). It is *not* a token prefix: in
+`until ~ temp >= 80C`, the `~` is one token, `temp` an `IDENT`, `>=` an `OP`,
+`80C` a `QTY`. There is no `~name` fused form (unlike `@`), because the
+tropical-threshold production puts a metric *identifier* after the sigil, not a
+fused name.
+
+== 9. Operators and punctuation [[operators]]
+
+All emit class `OP`; the value is the canonical operator string. Listed in
+*maximal-munch priority* (longest first within a shared prefix):
+
+[cols="1,1,3", options="header"]
+|===
+| Lexeme | Name | Role
+
+| `<~>` | dyadic bind | The Dyadic tensor `(X, Y) <~> Actor` (constitution §3, `Dough.agda`). Three scalars; munched before `<`, `~`, `>`.
+| `->`  | arrow | Step / projection arrow in `bind -> res` and phase transitions `RAW -> COOKED`. Two scalars; munched before `-`.
+| `..`  | range | Envelope range `0C .. 250C`, `0Nm .. 8Nm` (constitution §2.4 `range`/`slope`/`reach`). Two scalars; munched before `.`.
+| `>=`  | ge | Comparison in conditions. Two scalars; before `>`.
+| `<=`  | le | Comparison. Two scalars; before `<`.
+| `==`  | eq | Echo-witness equality `@white_set == true`. Two scalars; before `=`.
+| `!=`  | ne | Comparison. Two scalars.
+| `>`   | gt | Comparison.
+| `<`   | lt | Comparison.
+| `~`   | tropical | Tropical setpoint/threshold sigil (<<sigils>>).
+| `@`   | echo (bare) | Bare echo sigil when not fused (<<sigils>>).
+| `.`   | member | `actor.Verb`, `Delia_Hob.visual` member access.
+| `:`   | colon | Key/value in `arg ::= ident ":" …`, envelope fields `curdle: 82C`, and modality `on Hob.visual`.
+| `;`   | semicolon | Statement terminator.
+| `,`   | comma | Separator in actor lists, arg lists, bind tuples, ceremony settings.
+| `(` `)` | parens | Grouping: actor lists, param lists, bind tuples.
+| `{` `}` | braces | Block delimiters: envelopes, sync bodies, recipe bodies, ceremonies.
+|===
+
+The comparison set stem:[\{ ==, !=, >=, <=, >, < \}] is the v1.0 `comparison`
+placeholder (O3) resolved. `=` *alone* is *not* a token (KitchenSpeak has no
+assignment); a lone `=` not part of `==`, `>=`, `<=`, or `!=` is `E-OP`.
+
+== 10. Maximal munch and the master automaton [[munch]]
+
+=== 10.1 The rule
+
+KitchenSpeak tokenisation obeys *maximal munch* (longest match): at each
+position the lexer consumes the longest scalar run that forms a valid token of
+*any* class. Ties (two classes accepting the same longest run) are broken by the
+fixed class priority below. After emitting a token, the lexer resumes at the next
+unconsumed scalar.
+
+.Class priority for tie-breaking (highest first)
+. Comment openers `//`, `/*` (consume to terminator before any operator).
+. Compound operators `<~>`, `->`, `..`, `>=`, `<=`, `==`, `!=`.
+. `QTY` / `NUM` (a magnitude greedily extends through its longest table suffix).
+. `ECHO_REF` (`@` fused with a following identifier).
+. `IDENT`-shaped run → reclassified by <<reserved>> (`KEYWORD` / `SLOPE_TAG` / `STYLE_TAG` / `FAIL_TAG` / `PHASE_TAG` / `IDENT`).
+. Single-scalar operators and punctuation.
+
+=== 10.2 Worked munch cases
+
+[cols="1,2,3", options="header"]
+|===
+| Input fragment | Tokens | Why
+
+| `<~>` | `OP("<~>")` | Compound beats `<`,`~`,`>` (priority 2).
+| `<~ x` | `OP("<")` `OP("~")` `IDENT("x")` | `<~>` fails (no `>`), so `<` then `~` then ident.
+| `2C/s` | `QTY(2 °C/s)` | Suffix automaton munches `C/s` atomically (priority 3).
+| `2C / s` | `QTY(2 °C)` `OP("/")`? — `/` is *not* an operator; this is `E-OP` | KitchenSpeak has no bare `/` operator; division appears only inside unit suffixes. A standalone `/` (not opening a comment, not in a suffix) is `E-OP`.
+| `0.8Pa·s` | `QTY(0.8 Pa·s)` | Magnitude `0.8`, suffix `Pa·s` (the `·` consumed as unit separator).
+| `r..5` | `IDENT("r")` `OP("..")` `NUM(5)` | `..` beats `.` `.`.
+| `a.b`  | `IDENT("a")` `OP(".")` `IDENT("b")` | Single `.` member access; no `..` because only one dot.
+| `@white_set==true` | `ECHO_REF("white_set")` `OP("==")` `KEYWORD("true")` | `@`+ident fused; `==` compound; `true` reserved.
+| `80rpm` | `QTY(8.3776 rad/s)` | `rpm` munched over `r`,`p`,`m`; normalised by stem:[2\pi/60].
+| `min`  | `IDENT("min")` | `min` is *not* a keyword and not adjacent to a magnitude; bare ident.
+| `5min` | `QTY(300 s)` | Adjacent magnitude+suffix.
+|===
+
+== 11. Two fully worked tokenisations
+
+=== 11.1 Line from `examples/poached-egg.ks`
+
+Source line:
+
+[source]
+----
+Delia_Hob.Heat(target: 82C, slope: GENTLE)
+----
+
+Token stream (class, lexeme, value):
+
+[cols="1,1,3", options="header"]
+|===
+| # | Lexeme | Token
+
+| 1  | `Delia_Hob` | `IDENT`, value `"Delia_Hob"`
+| 2  | `.`         | `OP`, value `"."` (member access)
+| 3  | `Heat`      | `IDENT`, value `"Heat"` (capability verb)
+| 4  | `(`         | `OP`, value `"("`
+| 5  | `target`    | `IDENT`, value `"target"` (arg key)
+| 6  | `:`         | `OP`, value `":"`
+| 7  | `82C`       | `QTY`, value stem:[(82,\ \texttt{Temperature})] = 82 °C
+| 8  | `,`         | `OP`, value `","`
+| 9  | `slope`     | `KEYWORD`, value `slope`
+| 10 | `:`         | `OP`, value `":"`
+| 11 | `GENTLE`    | `SLOPE_TAG`, value stem:[0.30] (× appliance max slope)
+| 12 | `)`         | `OP`, value `")"`
+|===
+
+Note token 9: `slope` is a *keyword* (envelope field, §4) here, whereas `target`
+(token 5) is a plain `IDENT` argument key — the asymmetry is real and intended.
+
+=== 11.2 Line from `proofs/agda/Dough.agda`'s source program
+
+Source line (the `Knead` step's `until` clause and budget):
+
+[source]
+----
+Knead(RPM: 80) until @viscosity >= 0.8Nm max_duration 15min
+----
+
+Token stream:
+
+[cols="1,1,3", options="header"]
+|===
+| # | Lexeme | Token
+
+| 1  | `Knead`        | `IDENT`, `"Knead"` (verb)
+| 2  | `(`            | `OP`, `"("`
+| 3  | `RPM`          | `IDENT`, `"RPM"` (arg key)
+| 4  | `:`            | `OP`, `":"`
+| 5  | `80`           | `NUM`, value stem:[(80,\ \texttt{Dimensionless})] — bare, no suffix
+| 6  | `)`            | `OP`, `")"`
+| 7  | `until`        | `KEYWORD`, `until`
+| 8  | `@viscosity`   | `ECHO_REF`, value `"viscosity"`
+| 9  | `>=`           | `OP`, `">="`
+| 10 | `0.8Nm`        | `QTY`, value stem:[(0.8,\ \texttt{Torque})] = 0.8 N·m
+| 11 | `max_duration` | `KEYWORD`, `max_duration`
+| 12 | `15min`        | `QTY`, value stem:[(900,\ \texttt{Time})] = 900 s (15 × 60)
+|===
+
+Note token 5: `80` in `RPM: 80` is *dimensionless* — the dimension lives in the
+arg key `RPM`, not a suffix — so it is `NUM`, contrasting with token 10's `0.8Nm`
+which carries its `Torque` dimension in the suffix. This is exactly the v1.0 vs
+v2.0 surface tension the constitution §1 describes: v1.0 wrote bare numbers with
+units in the key; v2.0 prefers dimensioned literals. Both lex; the type checker
+reconciles the key's expected dimension against the literal's.
+
+== 12. Resolution of O3 placeholders [[placeholder-map]]
+
+This section discharges open item O3 by mapping each `grammar.ebnf` lexical
+placeholder to a token class defined above.
+
+[cols="1,2,3", options="header"]
+|===
+| O3 placeholder | Token class(es) | Note
+
+| `identifier`   | `IDENT` | §5.
+| `integer`      | `NUM` with empty `frac_part` | §6.1. The lexer does not distinguish int from real; a downstream check enforces integrality where required (e.g. `alert_level: 4`).
+| `actor`, `actor_id` | `IDENT` | A declared chef/appliance name.
+| `actors`       | `IDENT { "," IDENT }` | Comma list (parser-level), each an `IDENT`.
+| `action`       | `IDENT` | The capability verb after `.`.
+| `params`       | sequence of `arg` (parser-level) | Each `arg` = `IDENT ":" (QTY \| NUM \| SLOPE_TAG \| STYLE_TAG \| IDENT)`.
+| `metric`       | `IDENT` | The quantity name after `~`.
+| `comparison`   | `OP` ∈ {`==`,`!=`,`>=`,`<=`,`>`,`<`} | §9.
+| `value`        | `QTY` \| `NUM` \| `KEYWORD(true/false)` \| `ECHO_REF` | §6, §4.
+| `time`         | `QTY` with dimension `Time` | A typed `max_duration`; the checker rejects a non-`Time` `QTY` here.
+| `error_handle` | `FAIL_TAG` ∈ {`ABORT`,`RECOVER`,`WARM`} | §7.3.
+| `ceremony_id`, `echo_id`, `resource_id` | `IDENT` (echo references use `ECHO_REF`) | `echo_id` after `proving` is `ECHO_REF`; a ceremony or resource name is `IDENT`.
+|===
+
+== 13. Lexical error catalogue (normative)
+
+[cols="1,3", options="header"]
+|===
+| Code | Condition
+
+| `E-ENCODING` | Ill-formed UTF-8, or a U+FEFF not at file start.
+| `E-UNICODE`  | A non-ASCII scalar outside the three admitted roles (§1.2), in token position.
+| `E-COMMENT`  | Unterminated block comment at EOF.
+| `E-NUMBER`   | A magnitude with `.` and no fractional digit (`5.`).
+| `E-UNIT`     | A magnitude butting against an unrecognised unit/letter run (`82x`, `82Q`).
+| `E-OP`       | An illegal operator scalar (lone `=`, bare `/` outside a unit suffix or comment).
+| `E-CHAR`     | Any scalar that begins no token class at all.
+|===
+
+Every lexical error carries the byte offset and the offending lexeme, so a
+mis-typed unit (the most safety-relevant lexical mistake — a wrong unit is how
+you scorch an egg) surfaces with a precise location *before* any type checking
+runs. The lexer is the first line of the "make illegal physical states
+unrepresentable" defence: a quantity whose unit the lexer cannot place never
+reaches the safety judgment of constitution §5 as a silent dimensionless number.

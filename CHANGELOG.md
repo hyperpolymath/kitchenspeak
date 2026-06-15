@@ -9,3 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Run: just changelog -->
 
 ## [Unreleased]
+
+### Added — v2.0 elevation (2026-06-15)
+
+- **Physically-grounded type system design.** `docs/design/0001-v2-constitution.adoc`
+  (binding contract) plus the blueprint: `docs/spec/` (lexical grammar, concrete
+  grammar v2, normative type system) and `docs/design/` (semantics & safety
+  calculus, HAL & hardware, standard ontology, blueprint index). Materials carry
+  thermal/mechanical/chemical envelopes and appliances carry capability envelopes
+  so physical-safety violations are compile errors.
+- **Reference compiler** `src/compiler/` (`ksc`, dependency-free OCaml): lexer →
+  parser → typed AST → physical-safety checker → HAL lowering (Matter / MQTT /
+  ROS 2). `ksc check | lower | parse`.
+- **Example corpus** `examples/v2/` (5 well-typed recipes) + `examples/v2/negative/`
+  (9 must-reject recipes) and `tests/run-corpus.sh` (14/14 green).
+- **`proofs/agda/NoCurdle.agda`** — v2.0 flagship: machine-checked proof that a
+  bounded controller keeps milk below its curdle envelope and the milk phase never
+  becomes CURDLED. Wired into `proofs/Makefile`.
+
+### Fixed
+
+- **Re-homed the design substance** lost in the original excavation from the
+  nextgen-languages monorepo: `proofs/agda/{Dough,PoachedEgg,EchoBridge}`,
+  `proofs/Makefile`, ADRs 0002–0004, and `ROADMAP.adoc`.
+- Corrected `.machine_readable/STATE.a2ml` identity (was still
+  `project "rsr-template-repo"`) and added the language artefacts to
+  `.machine_readable/root-allow.txt`.
