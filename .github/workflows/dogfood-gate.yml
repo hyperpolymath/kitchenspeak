@@ -39,11 +39,7 @@ jobs:
 
       - name: Validate A2ML manifests
         if: steps.detect.outputs.count > 0
-        uses: hyperpolymath/a2ml-validate-action@cb3c1e298169dc5ac2b42e257068b0fb5920cd5e # main
-        with:
-          path: '.'
-          strict: 'false'
-
+        run: bash .githooks/validate-a2ml.sh
       - name: Write summary
         run: |
           A2ML_COUNT="${{ steps.detect.outputs.count }}"
@@ -88,11 +84,7 @@ jobs:
 
       - name: Validate K9 contracts
         if: steps.detect.outputs.k9_count > 0
-        uses: hyperpolymath/k9-validate-action@236f0035cc159051c8dd5dc7cd8af1e8cf961462 # main
-        with:
-          path: '.'
-          strict: 'false'
-
+        run: bash .githooks/validate-k9.sh
       - name: Write summary
         run: |
           K9_COUNT="${{ steps.detect.outputs.k9_count }}"
@@ -263,26 +255,26 @@ jobs:
 
           # Validate TOML structure using Python 3.11+ tomllib
           python3 -c "
-import tomllib, sys
-with open('eclexiaiser.toml', 'rb') as f:
-    data = tomllib.load(f)
-project = data.get('project', {})
-if not project.get('name', '').strip():
-    print('ERROR: project.name is required', file=sys.stderr)
-    sys.exit(1)
-functions = data.get('functions', [])
-if not functions:
-    print('ERROR: at least one [[functions]] entry is required', file=sys.stderr)
-    sys.exit(1)
-for fn in functions:
-    if not fn.get('name', '').strip():
-        print('ERROR: function name cannot be empty', file=sys.stderr)
-        sys.exit(1)
-    if not fn.get('source', '').strip():
-        print(f'ERROR: function {fn[\"name\"]} has no source path', file=sys.stderr)
-        sys.exit(1)
-print(f'Valid: {project[\"name\"]} ({len(functions)} function(s))')
-" || {
+          import tomllib, sys
+          with open('eclexiaiser.toml', 'rb') as f:
+              data = tomllib.load(f)
+          project = data.get('project', {})
+          if not project.get('name', '').strip():
+              print('ERROR: project.name is required', file=sys.stderr)
+              sys.exit(1)
+          functions = data.get('functions', [])
+          if not functions:
+              print('ERROR: at least one [[functions]] entry is required', file=sys.stderr)
+              sys.exit(1)
+          for fn in functions:
+              if not fn.get('name', '').strip():
+                  print('ERROR: function name cannot be empty', file=sys.stderr)
+                  sys.exit(1)
+              if not fn.get('source', '').strip():
+                  print(f'ERROR: function {fn[\"name\"]} has no source path', file=sys.stderr)
+                  sys.exit(1)
+          print(f'Valid: {project[\"name\"]} ({len(functions)} function(s))')
+          " || {
             echo "::error file=eclexiaiser.toml::Invalid eclexiaiser.toml — see step output for details"
             exit 1
           }
