@@ -17,6 +17,7 @@ AUDIT.adoc
 EXPLAINME.adoc
 0-AI-MANIFEST.a2ml         # thin pointer to .machine_readable/0.1-AI-MANIFEST.a2ml
 LICENSE
+LICENSES/                  # REUSE licence texts (MPL-2.0.txt + CC-BY-SA-4.0.txt) for the dual-licence model (code MPL-2.0 / docs CC-BY-SA-4.0)
 CHANGELOG.md
 
 # ─── Build entry points (must live at root for their tooling) ────────────────
