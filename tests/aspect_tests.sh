@@ -50,7 +50,13 @@ bold "Aspect 1: SPDX license headers"
 
 MISSING_SPDX=0
 while IFS= read -r -d '' f; do
-    if ! head -5 "$f" | grep -q "SPDX-License-Identifier"; then
+    # Window widened from 5 to 15 lines, 2026-07-29. src/interface/ffi/src/main.zig
+    # carries SPDX-License-Identifier: MPL-2.0 on line SIX, under a five-line
+    # descriptive banner -- a perfectly licensed file reported as unlicensed
+    # because the header sat one line outside the window. The tempting "fix" is
+    # to add a second SPDX line to a file that already has one; the actual defect
+    # is the window.
+    if ! head -15 "$f" | grep -q "SPDX-License-Identifier"; then
         warn "Missing SPDX header: $f"
         MISSING_SPDX=$((MISSING_SPDX + 1))
     fi
@@ -77,7 +83,15 @@ else
 fi
 
 # Coq/Lean dangerous patterns
-DANGEROUS_PROOF=$(grep -rn '\bAdmitted\b\|\bsorry\b\|\bunsafeCoerce\b\|\bObj\.magic\b' src/ verification/ 2>/dev/null | grep -v "test" | grep -v "comment" || true)
+DANGEROUS_PROOF=$(
+  for f in $(find src verification -type f \
+               \( -name '*.v' -o -name '*.lean' -o -name '*.agda' \
+                  -o -name '*.idr' -o -name '*.thy' -o -name '*.rs' -o -name '*.zig' \) 2>/dev/null); do
+    awk -f tests/lib/strip-proof-comments.awk "$f" 2>/dev/null \
+      | grep -nE '\bAdmitted\b|\bsorry\b|\bunsafeCoerce\b|\bObj\.magic\b' \
+      | sed "s|^|$f:|"
+  done || true
+)
 if [ -n "$DANGEROUS_PROOF" ]; then
     fail "Dangerous proof patterns found:"
     echo "$DANGEROUS_PROOF" | head -5
