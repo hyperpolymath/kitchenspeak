@@ -38,7 +38,7 @@ jobs:
             fi
           done
           if [ $failed -eq 1 ]; then
-            echo "Add '# SPDX-License-Identifier: PMPL-1.0' as first line"
+            echo "Add '# SPDX-License-Identifier: MPL-2.0' as first line"
             exit 1
           fi
           echo "All workflows have SPDX headers"
@@ -56,7 +56,7 @@ jobs:
           done
           if [ $failed -eq 1 ]; then
             echo "Add 'permissions:
-  contents: read' at workflow level"
+            contents: read' at workflow level"
             exit 1
           fi
           echo "All workflows have permissions declared"
