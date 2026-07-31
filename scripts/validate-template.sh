@@ -102,7 +102,7 @@ check_file_exists "AUDIT.adoc" "Release audit gate"
 # Directories
 check_dir_exists ".machine_readable" "Machine-readable metadata"
 check_dir_exists ".github" "GitHub community metadata"
-check_dir_exists "src/interface/abi" "Idris2 ABI definitions"
+check_dir_exists "src/interface/Abi" "Idris2 ABI definitions"
 check_dir_exists "src/interface/ffi" "Zig FFI implementation"
 check_dir_exists "src/interface/generated/abi" "Generated C headers"
 check_dir_exists "docs" "Documentation"
@@ -136,14 +136,12 @@ REQUIRED_WORKFLOWS=(
     "quality.yml"
     "mirror.yml"
     "instant-sync.yml"
-    "guix-nix-policy.yml"
     "rsr-antipattern.yml"
     "security-policy.yml"
     "wellknown-enforcement.yml"
     "workflow-linter.yml"
-    "npm-bun-blocker.yml"
-    "ts-blocker.yml"
-    "scorecard-enforcer.yml"
+    "runtime-policy.yml"
+    "scorecard.yml"
     "secret-scanner.yml"
 )
 
@@ -190,9 +188,9 @@ log_info "Phase 4: Idris2 ABI and Zig FFI source files"
 echo ""
 
 # Idris2 ABI files
-check_file_exists "src/interface/abi/Types.idr" "Core type definitions"
-check_file_exists "src/interface/abi/Layout.idr" "Memory layout specifications"
-check_file_exists "src/interface/abi/Foreign.idr" "FFI foreign declarations"
+check_file_exists "src/interface/Abi/Types.idr" "Core type definitions"
+check_file_exists "src/interface/Abi/Layout.idr" "Memory layout specifications"
+check_file_exists "src/interface/Abi/Foreign.idr" "FFI foreign declarations"
 
 # Zig FFI files
 check_file_exists "src/interface/ffi/build.zig" "Zig build configuration"
