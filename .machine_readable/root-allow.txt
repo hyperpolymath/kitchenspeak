@@ -67,3 +67,20 @@ proofs/                    # Agda (now) / Lean (later) lowerings of the recipes
 .pre-commit-config.yaml    # TODO: relocate to ci/.pre-commit-config.yaml after invocation pattern decided
 affinescript/              # AffineScript source subtree consumed by this template
 tools/                     # TODO: consolidate with scripts/ or document the split (pending decision)
+
+# ─── Governance / community surfaces (GitHub reads these at root) ────────────
+# Added 2026-08-03 with the C-A-G-M sweep landing; GitHub's community-health
+# and OpenSSF tooling look for these exact root paths.
+CONTRIBUTING.md
+SECURITY.md
+GOVERNANCE.adoc
+GOVERNANCE.md              # C-A-G-M sweep counterpart of GOVERNANCE.adoc
+ARCHITECTURE.md            # C-A-G-M sweep architecture overview
+MAINTAINERS                # C-A-G-M sweep plain-text maintainer roster
+MAINTAINERS.adoc
+
+# ─── Licensing / packaging / tooling (tool-required at root) ─────────────────
+LICENSES/                  # REUSE-style full licence texts (MPL-2.0, CC-BY-SA-4.0)
+manifest.scm               # Guix manifest; `guix shell -m manifest.scm` reads root
+mise.toml                  # mise toolchain pins (sweep2); mise reads repo root
+docs-template/             # site templates consumed by the Ddraig SSG docs deploy (#14)
