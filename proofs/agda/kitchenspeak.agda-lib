@@ -1,7 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 -- KitchenSpeak core proof library.
 -- Agda 2.6.4+ with standard-library 2.3+ (echo-types requires 2.3+).
---
 -- echo-types (hyperpolymath/echo-types) provides the canonical Echo
 -- (fiber) type that KitchenSpeak's @ witnesses are wired onto in
 -- EchoBridge.agda. echo-types itself declares `depend: standard-library
