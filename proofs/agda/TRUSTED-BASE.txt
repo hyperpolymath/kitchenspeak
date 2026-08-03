@@ -1,0 +1,6 @@
+proofs/agda/Dough.agda:viscosity-at
+proofs/agda/NoCurdle.agda:gentle-bounded
+proofs/agda/NoCurdle.agda:temp-at
+proofs/agda/PoachedEgg.agda:gentle-bounded
+proofs/agda/PoachedEgg.agda:temp-at
+proofs/agda/PoachedEgg.agda:white-set-at

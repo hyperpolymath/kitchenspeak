@@ -1,0 +1,137 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Proof Gates — builds the real compiler and checks the real proofs.
+#
+# FAIL-CLOSED by design: a missing prover fails the job. This replaces
+# reliance on Rust CI (which "passes" by detecting no Cargo.toml and
+# skipping every job) and on `just proof-check-*` (which exits 0 when a
+# prover is absent). Nothing in this file is allowed to skip.
+#
+# Toolchain provenance:
+#   - compiler + agda jobs run in debian:trixie, the same distribution
+#     (and identical ocaml/dune/agda/agda-stdlib versions) the suite was
+#     verified against locally on 2026-08-03.
+#   - the idris2 job runs in a digest-pinned pack image; the suite was
+#     verified against BOTH idris2 0.7.0 (local) and 0.8.0 (this image).
+name: Proof Gates
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: proof-gates-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  compiler:
+    name: OCaml compiler + example matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: debian:trixie
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install toolchain (fail-closed)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ocaml ocaml-dune
+          ocaml -version
+          dune --version
+      - name: Build compiler
+        working-directory: src/compiler
+        run: dune build
+      - name: Positive examples must type-check
+        run: |
+          KSC=src/compiler/_build/default/main.exe
+          fail=0
+          for f in examples/v2/*.ks; do
+            if ! "$KSC" check "$f"; then
+              echo "::error file=$f::positive example failed to type-check"
+              fail=1
+            fi
+          done
+          exit "$fail"
+      - name: Negative examples must be rejected
+        run: |
+          KSC=src/compiler/_build/default/main.exe
+          fail=0
+          for f in examples/v2/negative/*.ks; do
+            if "$KSC" check "$f" > /dev/null 2>&1; then
+              echo "::error file=$f::negative example was accepted (must be rejected)"
+              fail=1
+            fi
+          done
+          exit "$fail"
+
+  agda-proofs:
+    name: Agda proofs + trusted-base budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      image: debian:trixie
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Checkout echo-types (pinned)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: hyperpolymath/echo-types
+          ref: 900546a832ddfefb4fa48881cdebdc9b1260d1f9
+          path: .deps/echo-types
+      - name: Checkout absolute-zero (pinned)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: hyperpolymath/absolute-zero
+          ref: cef394b617869e1fa0d10f8fd9bdbba8db8d8738
+          path: .deps/absolute-zero
+      - name: Install Agda (fail-closed)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends agda agda-bin agda-stdlib
+          agda --version
+      - name: Check proofs
+        run: |
+          LIB="$PWD/.agda-libraries"
+          printf '%s\n' \
+            /usr/share/agda-stdlib/standard-library.agda-lib \
+            "$PWD/.deps/echo-types/echo-types.agda-lib" \
+            "$PWD/.deps/absolute-zero/absolute-zero.agda-lib" > "$LIB"
+          cd proofs/agda
+          # EchoBridge is postulate-free and must stay --safe.
+          agda --safe --library-file="$LIB" EchoBridge.agda
+          # The recipe proofs carry audited physical-world postulates
+          # (see TRUSTED-BASE.txt), so they check without --safe; the
+          # budget step below stops that trusted base growing silently.
+          for f in Dough.agda NoCurdle.agda PoachedEgg.agda; do
+            agda --library-file="$LIB" "$f"
+          done
+      - name: Trusted-base budget (no new postulates)
+        run: sh scripts/check-agda-trusted-base.sh
+
+  abi-proofs:
+    name: Idris2 ABI proof suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: ghcr.io/stefan-hoeck/idris2-pack@sha256:f0dece3334c6a1d21d65334416e02d0e7b59da480644006b52c8b78c8cfc49f5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Typecheck ABI proof suite (fail-closed)
+        working-directory: verification/proofs/idris2
+        run: |
+          idris2 --version
+          idris2 --typecheck kitchenspeak-abi-proofs.ipkg
+      - name: No dangerous escape hatches
+        run: |
+          # Matches code lines only; the file headers legitimately SAY
+          # "no believe_me, no assert_total" in comments, so lines whose
+          # content starts with the Idris comment marker are excluded.
+          hits=$(grep -rnE "believe_me|assert_total" verification/proofs/idris2 --include="*.idr" | grep -vE ":[[:space:]]*--" || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::dangerous escape hatch found in proof code"
+            exit 1
+          fi
+          echo "OK: no believe_me / assert_total in proof code."
