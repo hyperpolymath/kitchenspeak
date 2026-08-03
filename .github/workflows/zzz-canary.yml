@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MPL-2.0
+name: Canary
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/canary]
+permissions:
+  contents: read
+jobs:
+  hi:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say hi
+        run: echo "canary alive"
