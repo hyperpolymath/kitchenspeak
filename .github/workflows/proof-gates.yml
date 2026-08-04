@@ -33,7 +33,7 @@ jobs:
     container:
       image: debian:trixie
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       - name: Install toolchain (fail-closed)
         run: |
           apt-get update
@@ -73,15 +73,15 @@ jobs:
     container:
       image: debian:trixie
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       - name: Checkout echo-types (pinned)
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
         with:
           repository: hyperpolymath/echo-types
           ref: 900546a832ddfefb4fa48881cdebdc9b1260d1f9
           path: .deps/echo-types
       - name: Checkout absolute-zero (pinned)
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
         with:
           repository: hyperpolymath/absolute-zero
           ref: cef394b617869e1fa0d10f8fd9bdbba8db8d8738
@@ -117,7 +117,7 @@ jobs:
     container:
       image: ghcr.io/stefan-hoeck/idris2-pack@sha256:f0dece3334c6a1d21d65334416e02d0e7b59da480644006b52c8b78c8cfc49f5
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       - name: Typecheck ABI proof suite (fail-closed)
         working-directory: verification/proofs/idris2
         run: |
