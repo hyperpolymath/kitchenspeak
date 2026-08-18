@@ -1,0 +1,2 @@
+package kitchenspeak-abi-proofs
+modules = Types, ABI.Layout, ABI.Platform, ABI.Foreign, ABI.Pointers, ABI.Compliance

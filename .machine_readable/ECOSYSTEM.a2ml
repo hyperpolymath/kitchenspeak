@@ -2,7 +2,9 @@
 ;; Ecosystem position and relationships
 (ecosystem
   (version "1.0.0")
-  (name "{{REPO}}")
-  (type "library")
-  (purpose "{{REPO_DESCRIPTION}}")
-  (related-projects))
+  (name "kitchenspeak")
+  (type "language")
+  (purpose "Future kitchen orchestration language for IoT and IIoT")
+  (related-projects
+    (project "echo-types" "Agda Echo (fiber) substrate consumed by EchoBridge.agda")
+    (project "nextgen-languages" "coordinator that indexes this language")))

@@ -7,6 +7,8 @@
 
 module ABI.Platform
 
+import public Data.Nat
+
 %default total
 
 ||| Supported target platforms for ABI verification.
@@ -50,6 +52,13 @@ ptrSizeValid FreeBSD64 = Right Refl
 export
 cIntAlways4 : (p : Platform) -> cIntSize p = 4
 cIntAlways4 _ = Refl
+
+||| LTE is reflexive. (Idris1's `lteRefl` did not survive into the
+||| Idris2 base library; reproven here constructively.)
+private
+lteRefl : {n : Nat} -> LTE n n
+lteRefl {n = Z} = LTEZero
+lteRefl {n = S k} = LTESucc lteRefl
 
 ||| Proof that pointer size is always at least 4 bytes.
 export

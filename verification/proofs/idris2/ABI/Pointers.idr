@@ -21,8 +21,10 @@ record SafePtr where
 
 ||| Proof that SafePtr can never hold a null (zero) value.
 ||| This is enforced by the `So` constraint in the record.
+||| Erased (0 quantity): the witness it extracts is itself erased, so
+||| this proof exists only at the type level — which is all a proof needs.
 export
-safePtrNeverNull : (sp : SafePtr) -> So (sp.ptr /= 0)
+0 safePtrNeverNull : (sp : SafePtr) -> So (sp.ptr /= 0)
 safePtrNeverNull sp = sp.nonNull
 
 ||| Wrap a raw pointer with a runtime null check.
@@ -46,7 +48,15 @@ record Handle (tag : String) where
   constructor MkHandle
   safePtr : SafePtr
 
+||| `So b` has at most one inhabitant (proof irrelevance for `So`).
+0 soUnique : {b : Bool} -> (x, y : So b) -> x = y
+soUnique Oh Oh = Refl
+
 ||| Proof that two handles with equal pointers are equal.
+||| Erased (0 quantity) so the erased `nonNull` witnesses may be
+||| inspected; their equality is discharged by `soUnique`.
 export
-handlePtrEq : (h1, h2 : Handle tag) -> h1.safePtr.ptr = h2.safePtr.ptr -> h1 = h2
-handlePtrEq (MkHandle (MkSafePtr p)) (MkHandle (MkSafePtr p)) Refl = Refl
+0 handlePtrEq : (h1, h2 : Handle tag) -> h1.safePtr.ptr = h2.safePtr.ptr -> h1 = h2
+handlePtrEq (MkHandle (MkSafePtr p {nonNull = n1})) (MkHandle (MkSafePtr q {nonNull = n2})) eq =
+  case eq of
+    Refl => rewrite soUnique n1 n2 in Refl

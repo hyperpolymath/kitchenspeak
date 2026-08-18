@@ -7,6 +7,8 @@
 
 module Types
 
+import public Data.Nat
+
 %default total
 
 ||| Example: A bounded natural number (0 to max).
@@ -18,8 +20,10 @@ record Bounded (max : Nat) where
   {auto 0 inBounds : LTE value max}
 
 ||| Proof that a Bounded value is always <= max.
+||| Erased (0 quantity): it extracts the erased `inBounds` witness,
+||| so it is available at the type level only.
 export
-boundedLeMax : (b : Bounded max) -> LTE b.value max
+0 boundedLeMax : (b : Bounded max) -> LTE b.value max
 boundedLeMax b = b.inBounds
 
 ||| Proof that zero is always a valid Bounded value.
