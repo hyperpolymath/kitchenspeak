@@ -1,5 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 -- Copyright (c) 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+-- hypatia: allow code_safety/agda_postulate -- audited physical assumptions; see docs/proof-debt.md
 --
 -- =====================================================================
 -- KitchenSpeak — No-Curdle Proof (Agda)   [v2.0 flagship]
@@ -49,7 +50,7 @@ module NoCurdle where
 open import Data.Nat
   using (ℕ; zero; suc; _≥_; _≥?_; _≤_; _<_; _<?_)
 open import Data.Nat.Properties
-  using (<-transʳ; <-transˡ; <-irrefl)
+  using (≤-<-trans; <-≤-trans; <-irrefl)
 open import Data.Sum
   using (_⊎_; inj₁; inj₂)
 open import Data.Product
@@ -179,7 +180,7 @@ warmed-gives-witness _ {w = w} _ = w
 --     its curdle envelope. Composing the controller contract (§3) with
 --     the configuration fact (§1): temp-at t ≤ 70 < 82.
 no-curdle : ∀ (t : Minutes) → temp-at t < curdle-threshold
-no-curdle t = <-transʳ (gentle-bounded t) cap<curdle
+no-curdle t = ≤-<-trans (gentle-bounded t) cap<curdle
 
 -- (b) The milk's phase typestate, read off the sensor at each minute.
 milk-state-at : Minutes → MilkState
@@ -191,7 +192,7 @@ milk-state-at t with temp-at t ≥? curdle-threshold
 --     branch would need temp-at t ≥ curdle, contradicting `no-curdle`.
 stays-fresh : ∀ (t : Minutes) → milk-state-at t ≡ FRESH
 stays-fresh t with temp-at t ≥? curdle-threshold
-... | yes ge = ⊥-elim (<-irrefl refl (<-transˡ (no-curdle t) ge))
+... | yes ge = ⊥-elim (<-irrefl refl (<-≤-trans (no-curdle t) ge))
 ... | no  _  = refl
 
 -- (d) Specialised to the trajectory the recipe actually produces: a

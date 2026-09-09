@@ -1,5 +1,6 @@
 -- SPDX-License-Identifier: MPL-2.0
 -- Copyright (c) 2026 Jonathan D.A. Jewell <j.d.a.jewell@open.ac.uk>
+-- hypatia: allow code_safety/agda_postulate -- audited physical assumptions; see docs/proof-debt.md
 --
 -- =====================================================================
 -- KitchenSpeak — Poached Egg Proof (Agda)
@@ -68,7 +69,7 @@ module PoachedEgg where
 open import Data.Nat
   using (ℕ; zero; suc; _≥_; _≥?_; _≤_; _<_; _<?_)
 open import Data.Nat.Properties
-  using (<-transʳ)
+  using (≤-<-trans)
 open import Data.Sum
   using (_⊎_; inj₁; inj₂)
 open import Data.Product
@@ -341,7 +342,7 @@ heldwarm-gives-witness _ _ _ {sw = sw} _ = sw
 -- Overheat`).
 
 tropical-safe : ∀ (t : Minutes) → temp-at t < boil-envelope
-tropical-safe t = <-transʳ (gentle-bounded t) cap<boil
+tropical-safe t = ≤-<-trans (gentle-bounded t) cap<boil
 
 -- And, specialised to the witness the program actually produces: a
 -- served egg's shimmer fired at a temperature inside the safe band
