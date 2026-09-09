@@ -1,0 +1,50 @@
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+<!-- SPDX-FileCopyrightText: 2026 Jonathan D.A. Jewell (hyperpolymath) -->
+
+# Proof debt
+
+## (a) Discharged in this repo
+
+- None.
+
+## (b) Budgeted — tested with refutation budget
+
+- None.
+
+## (c) Necessary axiom
+
+- `proofs/agda/Dough.agda:185` — `viscosity-at`
+  - **Justification**: The value is supplied by a physical torque sensor. Agda
+    cannot derive a measurement of the external world; the production lowering
+    must replace this oracle with the corresponding verified HAL binding.
+  - **Citation**: `docs/design/0002-semantics.adoc` §4.3 and
+    `docs/design/0003-hal-and-hardware.adoc` §6 define the compile-time-proof /
+    run-time-monitor boundary.
+
+- `proofs/agda/NoCurdle.agda:125` — `temp-at`, `gentle-bounded`
+  - **Justification**: `temp-at` is the external thermometer stream and
+    `gentle-bounded` is the controller contract enforced by the target device.
+    Neither physical fact is derivable inside Agda; deployment must discharge
+    both through a verified sensor and controller binding.
+  - **Citation**: `docs/design/0002-semantics.adoc` §4.3 and §5.2, and
+    `docs/design/0003-hal-and-hardware.adoc` §6.
+
+- `proofs/agda/PoachedEgg.agda:174` — `temp-at`, `white-set-at`
+  - **Justification**: These values are observations from external temperature
+    and visual-classifier sensors. Agda proves the recipe safe relative to
+    those observations; the HAL must provide and monitor their implementations.
+  - **Citation**: `docs/spec/0003-type-system.adoc` §6.5 and §9, and
+    `docs/design/0003-hal-and-hardware.adoc` §6.
+
+- `proofs/agda/PoachedEgg.agda:249` — `gentle-bounded`
+  - **Justification**: This is the target hob's controller-envelope contract,
+    which is a fact about the deployed hardware rather than a theorem Agda can
+    derive from the recipe. The production lowering must discharge it against
+    the verified HAL implementation.
+  - **Citation**: `docs/design/0002-semantics.adoc` §4.3 and §5.2, and
+    `docs/design/0003-hal-and-hardware.adoc` §6.
+
+## (d) DEBT — actively to be closed
+
+- None. The entries in section (c) are deployment-boundary assumptions, not
+  incomplete proofs; each must be discharged by the target HAL at run time.
