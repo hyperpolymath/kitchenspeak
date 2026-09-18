@@ -80,6 +80,7 @@ SECURITY.adoc              # Current security policy after the AsciiDoc migratio
 GOVERNANCE.adoc
 GOVERNANCE.md              # C-A-G-M sweep counterpart of GOVERNANCE.adoc
 ARCHITECTURE.md            # C-A-G-M sweep architecture overview
+ARCHITECTURE.adoc           # design overview; stays at root (owner ruling, 2026-09-18)
 MAINTAINERS                # C-A-G-M sweep plain-text maintainer roster
 MAINTAINERS.adoc
 
