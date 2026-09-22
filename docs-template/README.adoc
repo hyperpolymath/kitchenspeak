@@ -50,7 +50,7 @@ was chosen.
 
 This seed deliberately omits:
 
-* `proof-debt.md` — only relevant to proof-bearing repos; see
+* `proof-debt.adoc` — only relevant to proof-bearing repos; see
   link:https://github.com/hyperpolymath/standards/blob/main/docs/TRUSTED-BASE-REDUCTION-POLICY.adoc[standards#203].
 * `CHANGELOG.md` — generated automatically by
   link:https://github.com/hyperpolymath/standards/blob/main/.github/workflows/changelog-reusable.yml[`changelog-reusable.yml`]

@@ -35,7 +35,7 @@ just test        # runs the full test suite
   HTTP, etc.). Estate policy: prefer real over mocked
   (see `feedback_integration_tests_real_db` in maintainer's memory).
 * **Property**: `just test-prop` — randomised, slower; budget
-  documented in `docs/proof-debt.md` if applicable.
+  documented in `docs/proof-debt.adoc` if applicable.
 * **Full**: `just test` — runs all of the above.
 
 == Code style
