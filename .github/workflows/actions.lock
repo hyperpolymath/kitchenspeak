@@ -55,8 +55,7 @@ workflows:
         - 'hyperpolymath/standards@571cc734cd69fb846032ec77a662aa8ee4fc32cd'
     '.github/workflows/scorecard.yml':
         - 'hyperpolymath/standards@571cc734cd69fb846032ec77a662aa8ee4fc32cd'
-    '.github/workflows/secret-scanner.yml':
-        - 'hyperpolymath/standards@571cc734cd69fb846032ec77a662aa8ee4fc32cd'
+    '.github/workflows/secret-scanner.yml': []
     '.github/workflows/security-policy.yml':
         - 'actions/checkout@v7.0.1'
     '.github/workflows/static-analysis-gate.yml':
