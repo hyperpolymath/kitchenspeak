@@ -5,8 +5,8 @@
 :icons: font
 
 A hardware-agnostic orchestration DSL for the domestic kitchen. A recipe is
-a choreography; each station runs its projected plan; cost accounting
-commutes with cutting the day at any point.
+a choreography; each station runs its projected plan; cost accounting is
+intended to commute with cutting the day at any point.
 
 _Status: v1.0 specification stable; the commutation is K-CUT
 (hyperpolymath/choreographic-types), to be instantiated here — intended, not
