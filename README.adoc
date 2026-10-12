@@ -4,8 +4,13 @@
 :toc:
 :icons: font
 
-A formally-verified, hardware-agnostic orchestration DSL for the domestic
-kitchen. Translates culinary expert intent (Chef Personas) into
+A hardware-agnostic orchestration DSL for the domestic kitchen. A recipe is
+a choreography; each station runs its projected plan; cost accounting
+commutes with cutting the day at any point.
+
+_Status: v1.0 specification stable; the commutation is K-CUT
+(hyperpolymath/choreographic-types), to be instantiated here — intended, not
+yet checked._ Translates culinary expert intent (Chef Personas) into
 machine-executable actions for MQTT/Matter-class appliances, while
 maintaining physical and digital safety through a multi-layered type
 system.
