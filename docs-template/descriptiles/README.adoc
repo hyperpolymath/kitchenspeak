@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: MPL-2.0
+= Inherited descriptile templates
+
+These files preserve the template metadata previously shipped in the retired
+checkpoint directory. They describe rsr-template-repo or PseudoScript,
+not KitchenSpeak. Active project metadata lives in
+`.machine_readable/descriptiles/`; use that directory for project state,
+architecture, and ecosystem relationships.
