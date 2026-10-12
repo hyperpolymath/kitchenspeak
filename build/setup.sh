@@ -6,9 +6,8 @@
 # Then hands off to `just setup` for project-specific configuration.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/hyperpolymath/rsr-template-repo/main/setup.sh | sh
-#   # or after cloning:
-#   ./setup.sh
+#   # After cloning and reviewing the repository:
+#   sh build/setup.sh
 #
 # Copyright (c) 2026 Jonathan D.A. Jewell (hyperpolymath)
 
@@ -128,6 +127,56 @@ detect_platform() {
     esac
 }
 
+# Install a pinned binary only after checking both the checksum manifest and
+# archive. Digests are from casey/just release 1.58.0 on GitHub; update the
+# version and manifest digest together when upgrading the fallback.
+install_just_release() (
+    set -eu
+    JUST_VERSION=1.58.0
+    JUST_SUMS_SHA256=a2e7355b6882af86f46e86faf1150992d4326c131e697bdf2e7c95aebdff55cb
+    case "$OS:$ARCH" in
+        linux:aarch64) JUST_TARGET=aarch64-unknown-linux-musl ;;
+        linux:armv6l) JUST_TARGET=arm-unknown-linux-musleabihf ;;
+        linux:armv7l) JUST_TARGET=armv7-unknown-linux-musleabihf ;;
+        linux:loongarch64) JUST_TARGET=loongarch64-unknown-linux-musl ;;
+        linux:x86_64) JUST_TARGET=x86_64-unknown-linux-musl ;;
+        macos:arm64) JUST_TARGET=aarch64-apple-darwin ;;
+        macos:x86_64) JUST_TARGET=x86_64-apple-darwin ;;
+        windows:x86_64) JUST_TARGET=x86_64-pc-windows-msvc ;;
+        *) fail "No verified just binary for $OS/$ARCH. See https://just.systems/"; exit 1 ;;
+    esac
+    if command -v sha256sum >/dev/null 2>&1; then
+        verify_sha256() { sha256sum -c "$1"; }
+    elif command -v shasum >/dev/null 2>&1; then
+        verify_sha256() { shasum -a 256 -c "$1"; }
+    else
+        fail "SHA-256 verification requires sha256sum or shasum"
+        exit 1
+    fi
+    JUST_TMP=$(mktemp -d) || exit 1
+    trap 'rm -rf "$JUST_TMP"' EXIT
+    trap 'exit 1' HUP INT TERM
+    cd "$JUST_TMP" || exit 1
+    JUST_EXT=tar.gz
+    [ "$OS" != windows ] || JUST_EXT=zip
+    JUST_ARCHIVE="just-$JUST_VERSION-$JUST_TARGET.$JUST_EXT"
+    JUST_URL="https://github.com/casey/just/releases/download/$JUST_VERSION"
+    curl --proto '=https' --proto-redir '=https' -fsSL "$JUST_URL/SHA256SUMS" -o SHA256SUMS || exit 1
+    printf '%s  SHA256SUMS\n' "$JUST_SUMS_SHA256" > manifest.sha256
+    verify_sha256 manifest.sha256 || exit 1
+    # Select exactly one archive from the authenticated manifest.
+    awk -v archive="$JUST_ARCHIVE" '$2 == archive { print; found++ } END { if (found != 1) exit 1 }' SHA256SUMS > archive.sha256 || exit 1
+    curl --proto '=https' --proto-redir '=https' -fsSL "$JUST_URL/$JUST_ARCHIVE" -o "$JUST_ARCHIVE" || exit 1
+    verify_sha256 archive.sha256 || exit 1
+    if [ "$JUST_EXT" = zip ]; then
+        unzip "$JUST_ARCHIVE" just.exe || exit 1
+        install -m 755 just.exe /usr/local/bin/just.exe || exit 1
+    else
+        tar -xzf "$JUST_ARCHIVE" just || exit 1
+        install -m 755 just /usr/local/bin/just || exit 1
+    fi
+)
+
 # ── Install just ──
 install_just() {
     if command -v just >/dev/null 2>&1; then
@@ -140,8 +189,8 @@ install_just() {
     case "$PKG_MGR" in
         dnf)        sudo dnf install -y just ;;
         apt)        sudo apt-get install -y just 2>/dev/null || {
-                        # just not in older apt repos — use installer
-                        curl -fsSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+                        # just not in older apt repos — use verified release
+                        install_just_release || return 1
                     } ;;
         pacman)     sudo pacman -S --noconfirm just ;;
         apk)        sudo apk add just ;;
@@ -152,8 +201,8 @@ install_just() {
         guix)       guix install just ;;
         nix)        nix-env -iA nixpkgs.just ;;
         *)
-            info "Using just installer script..."
-            curl -fsSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+            info "Using verified just release..."
+            install_just_release || return 1
             ;;
     esac
 

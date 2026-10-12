@@ -115,9 +115,9 @@ echo ""
 log_info "Phase 2: Machine-readable metadata (.machine_readable/)"
 echo ""
 
-check_file_exists ".machine_readable/STATE.a2ml" "Project state"
-check_file_exists ".machine_readable/META.a2ml" "Architecture decisions"
-check_file_exists ".machine_readable/ECOSYSTEM.a2ml" "Ecosystem position"
+check_file_exists ".machine_readable/descriptiles/STATE.a2ml" "Project state"
+check_file_exists ".machine_readable/descriptiles/META.a2ml" "Architecture decisions"
+check_file_exists ".machine_readable/descriptiles/ECOSYSTEM.a2ml" "Ecosystem position"
 check_file_exists ".machine_readable/anchors/ANCHOR.a2ml" "Semantic boundary anchor"
 check_file_exists ".machine_readable/policies/MAINTENANCE-AXES.a2ml" "Maintenance axes"
 
@@ -211,7 +211,7 @@ if [ "$(basename "$REPO_ROOT")" = "rsr-template-repo" ]; then
     log_pass "Skipping placeholder check for template repo"
 else
     # Check that key files don't have unresolved placeholders
-    for file in "$REPO_ROOT/README.adoc" "$REPO_ROOT/Justfile" "$REPO_ROOT/.machine_readable/STATE.a2ml"; do
+    for file in "$REPO_ROOT/README.adoc" "$REPO_ROOT/Justfile" "$REPO_ROOT/.machine_readable/descriptiles/STATE.a2ml"; do
         if [ -f "$file" ]; then
             if has_placeholder "$file"; then
                 log_warning "File contains unresolved placeholders: $(basename "$file")"
