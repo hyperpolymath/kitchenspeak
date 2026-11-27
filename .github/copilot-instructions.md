@@ -34,7 +34,7 @@
 ## Banned Languages
 
 - No TypeScript (use ReScript)
-- No Node.js / npm (use Bun first)
+- No Node.js / yarn (use Bun first; Deno, pnpm, npm as fallbacks)
 - No Go (use Rust)
 - No Python (use Julia or Rust)
 
